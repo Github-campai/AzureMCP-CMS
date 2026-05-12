@@ -1,118 +1,107 @@
 # Klant-onboarding — CMS Lelystad
 
-Hoe geef je een klant-tenant toegang tot de CMS-MCP server, zodat hun gebruikers
-de MCP kunnen aanroepen vanuit Claude, Copilot Studio en (later) dashboards.
+Procedure om CMS-tenant toegang te geven tot de MCP-server. Onderdelen 1 en 2
+zijn voor de **CMS IT-admin**, onderdeel 3 voor **Campai** (zodra CMS klaar is).
 
-## Architectuur (auth-flow)
+## Wat is dit?
 
-```
-CMS-gebruiker → Claude/Copilot → krijgt Entra token van CMS tenant
-                                  (audience = CMS-MCP-API client ID,
-                                   scope = admcms.read)
-              → token naar https://cms-mcp-app-prod.<env>.azurecontainerapps.io/mcp
-              → server (in Campai tenant) valideert:
-                 - signature via JWKS (login.microsoftonline.com)
-                 - aud == ENTRA_APP_ID
-                 - tid in ENTRA_ALLOWED_TENANTS
-                 - scope bevat admcms.read
-                 - oid/groups in Key Vault allowlist
-              → tool call → Azure SQL ADMCMS → resultaat
-```
+De ADMCMS MCP-server draait in Campai's Azure tenant, maar de **Entra app
+registratie is multi-tenant**: CMS-gebruikers loggen in met hun eigen
+CMS-account in hun eigen tenant. Geen gastaccounts in Campai nodig.
 
-De **app registratie staat in Campai tenant** (`bf030cec-...`), maar is
-**multi-tenant** zodat klanten in hun eigen tenant admin-consent kunnen geven.
+| Item | Waarde |
+|---|---|
+| MCP endpoint | `https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp` |
+| Entra App ID | `1e6983d3-f996-4581-9518-e6819b79ac6a` |
+| App display name | `CMS-MCP-API` |
+| Scope | `admcms.read` |
+| Home tenant (Campai) | `bf030cec-d527-4f3c-9843-db5473bee3f7` |
+| CMS Lelystad tenant | `a92e7c27-7bb0-4bc3-aea5-89df54c243ad` |
 
-## Stap 1 — Admin-consent (CMS IT-admin)
+---
 
-CMS IT-admin opent de admin-consent URL (vervang `<CMS_TENANT_ID>` en
-`<CMS_MCP_APP_ID>` — die laatste komt uit `scripts/create-entra-app.ps1`):
+## Stap 1 — CMS IT-admin: Admin-consent geven (~ 2 minuten)
+
+CMS IT-admin (iemand met `Global Administrator` of `Privileged Role Administrator`
+in CMS tenant) opent in een browser:
 
 ```
-https://login.microsoftonline.com/<CMS_TENANT_ID>/adminconsent?client_id=<CMS_MCP_APP_ID>
+https://login.microsoftonline.com/a92e7c27-7bb0-4bc3-aea5-89df54c243ad/adminconsent?client_id=1e6983d3-f996-4581-9518-e6819b79ac6a
 ```
 
-Resultaat: de CMS-MCP-API verschijnt als enterprise application in CMS tenant.
+Stappen:
 
-## Stap 2 — Security group in CMS tenant
+1. Log in met een CMS Global Admin account
+2. Microsoft toont: **"CMS-MCP-API wants permission to:"**
+   - Sign you in and read your profile (Microsoft Graph — User.Read)
+   - Read ADMCMS data on behalf of user (`admcms.read`)
+3. Klik **Accept**
+4. Je krijgt mogelijk een "wrong page" of een lege pagina te zien — dat is
+   cosmetisch, consent is geslaagd
 
-CMS IT-admin maakt een security group `CMS-MCP-Users` in hun tenant en voegt
-gebruikers toe die toegang nodig hebben. Hij stuurt het Group Object ID door.
+Verifieer in Azure Portal → **CMS tenant** → Entra ID → Enterprise applications →
+zoek `CMS-MCP-API`. Hij moet daar staan als type `Application`.
 
-## Stap 3 — Tenant + group toevoegen aan server (Campai)
+## Stap 2 — CMS IT-admin: Security group voor toegang
 
-Voeg `<CMS_TENANT_ID>` toe aan `ENTRA_ALLOWED_TENANTS`:
+Maak in CMS tenant een security group, bijvoorbeeld `CMS-MCP-Users`:
+
+1. Azure Portal → Entra ID → Groups → New group
+2. Type: Security
+3. Name: `CMS-MCP-Users`
+4. Description: "Toegang tot de ADMCMS MCP server bij Campai"
+5. Voeg gebruikers toe die de MCP mogen gebruiken
+6. Na aanmaken: kopieer het **Object ID** van de group
+
+Stuur dat **Group Object ID** door naar Campai (Janneke@campai.nl).
+
+> Alternatief: lever een lijst van individuele user OIDs aan in plaats van een
+> groep. Voor onboarding meer dan ~5 gebruikers is groep aanbevolen.
+
+## Stap 3 — Campai: toegang activeren
+
+Campai voert eenmalig uit (vanaf daily account, na ontvangen group OID):
 
 ```powershell
-$current = az containerapp show --name cms-mcp-app-prod --resource-group CMS-MCP-rg-prod `
-    --query "properties.template.containers[0].env[?name=='ENTRA_ALLOWED_TENANTS'].value | [0]" -o tsv
-$new = "$current,<CMS_TENANT_ID>"
-az containerapp update --name cms-mcp-app-prod --resource-group CMS-MCP-rg-prod `
-    --set-env-vars "ENTRA_ALLOWED_TENANTS=$new"
-```
+az login
+az account set --subscription 1886dd8f-1ce7-4af2-8491-338341544b55
 
-Voeg het Group OID toe aan de Key Vault allowlist:
-
-```powershell
-$secret = az keyvault secret show --vault-name cms-mcp-kv-prod --name admcms-allowlist --query value -o tsv
-$obj = $secret | ConvertFrom-Json
-$obj.groups += "<CMS_GROUP_OID>"
-$updated = $obj | ConvertTo-Json -Compress
+# Voeg CMS group OID toe aan allowlist
+$current = az keyvault secret show --vault-name cms-mcp-kv-prod --name admcms-allowlist --query value -o tsv | ConvertFrom-Json
+$current.groups = @($current.groups) + "<CMS_GROUP_OID>"
+$updated = $current | ConvertTo-Json -Compress
 az keyvault secret set --vault-name cms-mcp-kv-prod --name admcms-allowlist --value $updated
+
+# Restart Container App zodat hij de nieuwe allowlist ophaalt (cache 5 min anders)
+$rev = az containerapp revision list -n cms-mcp-app-prod -g CMS-MCP-rg-prod --query "[?properties.active].name | [0]" -o tsv
+az containerapp revision restart -n cms-mcp-app-prod -g CMS-MCP-rg-prod --revision $rev
 ```
 
-## Stap 4 — Client setup per applicatie
+Vanaf nu kunnen alle CMS-gebruikers in de security group de MCP gebruiken.
 
-### Claude Desktop / Claude Code (CMS-gebruiker)
+## Stap 4 — CMS eindgebruiker: gebruik in Claude/Copilot
 
-Voeg toe aan `~/.claude/mcp_settings.json` (Claude Desktop) of via `claude mcp add`:
+Zie [`CLIENT-SETUP.md`](CLIENT-SETUP.md) voor configuratie per AI-tool.
 
-```json
-{
-  "mcpServers": {
-    "admcms": {
-      "url": "https://<container-app-fqdn>/mcp",
-      "transport": "http"
-    }
-  }
-}
-```
-
-Claude vraagt bij eerste call om Entra login (interactive). Gebruiker logt in met
-CMS-account, geeft toestemming voor `admcms.read`, klaar.
-
-### Cursor / VS Code
-
-Identiek aan Claude — voeg de MCP-server URL toe via de MCP-instellingen.
-
-### Copilot Studio
-
-Configureer een custom connector met:
-
-- **Authentication**: OAuth 2.0 (Generic OAuth 2)
-- **Client ID**: `<CMS_MCP_APP_ID>`
-- **Authorization URL**: `https://login.microsoftonline.com/<CMS_TENANT_ID>/oauth2/v2.0/authorize`
-- **Token URL**: `https://login.microsoftonline.com/<CMS_TENANT_ID>/oauth2/v2.0/token`
-- **Scope**: `api://cms-mcp/admcms.read`
-- **MCP endpoint**: `https://<container-app-fqdn>/mcp`
-
-### Dashboards (Power BI etc.)
-
-Niet rechtstreeks — dashboards kunnen geen interactive OAuth flow doen. Patroon:
-backend-proxy met On-Behalf-Of flow (geplanned, niet in V1; zie inforcer
-`docs/SYSTEM_ACCESS_AND_INTEGRATIONS.md` voor blueprint).
-
-## Verifiëren
-
-CMS-gebruiker test in Claude met:
-
-> "Wat zijn de top 10 klanten dit jaar?"
-
-Claude roept tool `get_top_customers` aan, krijgt resultaat, audit log registreert
-`upn`, `oid`, `tid`, duur, query.
+---
 
 ## Toegang intrekken
 
-- **Per gebruiker**: verwijder uit security group `CMS-MCP-Users` (in CMS tenant).
-- **Per tenant**: verwijder `<CMS_TENANT_ID>` uit `ENTRA_ALLOWED_TENANTS`.
-- **Volledig (nuke)**: verwijder de service principal van CMS-MCP-API uit CMS tenant
-  (CMS IT-admin in Azure Portal → Enterprise applications → CMS-MCP-API → Delete).
+| Scope | Hoe |
+|---|---|
+| **Eén gebruiker** | CMS IT-admin verwijdert uit security group `CMS-MCP-Users` (max 5 min cache) |
+| **Tijdelijk alle CMS-toegang pauzeren** | Campai verwijdert CMS tenant ID uit `ENTRA_ALLOWED_TENANTS` env var op Container App |
+| **Definitief afsluiten** | CMS IT-admin verwijdert de enterprise app `CMS-MCP-API` uit Entra → Enterprise applications |
+
+## Wat ziet CMS van de data?
+
+- **Lezen, niet schrijven**: alle 20 tools zijn SELECT-only, met SQL identifier
+  validation en parameterized queries. De server weigert non-SELECT.
+- **Audit log**: elke tool-call wordt geregistreerd met `upn`, `oid`, `tid`
+  (tenant), duur, gestelde queries. Campai kan deze loggen inzien voor compliance.
+- **Geen credentials in de container**: DB password staat in Campai's Key Vault,
+  Container App haalt het op via Managed Identity bij start.
+
+## Vragen / problemen
+
+Contact: Janneke Post (`Janneke@campai.nl`)
