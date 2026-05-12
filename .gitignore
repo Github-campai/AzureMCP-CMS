@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Test & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Linting
+.ruff_cache/
+.mypy_cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Claude Code — local per-developer settings (never shared).
+# Project-shared settings would go in .claude/settings.json (no .local).
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Legacy (to be removed)
+files.zip
+
+# Azure
+.azure/
+*.publishsettings
+schemas.txt
+
+# Tunnel tooling binaries (ignore if user drops them in repo root)
+cloudflared.exe
+ngrok.exe
+
+# Audit log (runtime — never commit)
+data/
+*.db

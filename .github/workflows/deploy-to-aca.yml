@@ -1,0 +1,98 @@
+name: Deploy CMS-MCP to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - '.github/workflows/deploy-to-aca.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'prod'
+        type: choice
+        options: [prod, dev]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_SUBSCRIPTION_ID: 1886dd8f-1ce7-4af2-8491-338341544b55
+  AZURE_RESOURCE_GROUP_PROD: CMS-MCP-rg-prod
+  CONTAINER_APP_PROD: cms-mcp-app-prod
+  IMAGE_NAME: admcms-mcp
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'prod' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve target resources
+        id: targets
+        run: |
+          ENV="${{ inputs.environment || 'prod' }}"
+          RG="CMS-MCP-rg-${ENV}"
+          APP="cms-mcp-app-${ENV}"
+          ACR=$(az acr list --resource-group "$RG" --query "[0].name" -o tsv)
+          if [ -z "$ACR" ]; then
+            echo "::error::No ACR found in $RG. Has infra been bootstrapped?"
+            exit 1
+          fi
+          LOGIN_SERVER=$(az acr show --name "$ACR" --query loginServer -o tsv)
+          echo "rg=$RG" >> $GITHUB_OUTPUT
+          echo "app=$APP" >> $GITHUB_OUTPUT
+          echo "acr=$ACR" >> $GITHUB_OUTPUT
+          echo "login_server=$LOGIN_SERVER" >> $GITHUB_OUTPUT
+
+      - name: Build image in ACR
+        run: |
+          TAG="${GITHUB_SHA::8}"
+          az acr build \
+            --registry "${{ steps.targets.outputs.acr }}" \
+            --image "${IMAGE_NAME}:${TAG}" \
+            --image "${IMAGE_NAME}:latest" \
+            --file Dockerfile \
+            .
+          echo "IMAGE_TAG=${TAG}" >> $GITHUB_ENV
+
+      - name: Update Container App
+        run: |
+          az containerapp update \
+            --name "${{ steps.targets.outputs.app }}" \
+            --resource-group "${{ steps.targets.outputs.rg }}" \
+            --image "${{ steps.targets.outputs.login_server }}/${IMAGE_NAME}:${IMAGE_TAG}" \
+            --output none
+
+      - name: Smoke test
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ steps.targets.outputs.app }}" \
+            --resource-group "${{ steps.targets.outputs.rg }}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "Deployed to: https://$FQDN"
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "https://$FQDN/healthz" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "✓ /healthz returned 200"
+              exit 0
+            fi
+            echo "Attempt $i: got $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::Health check did not return 200 after 5 attempts"
+          exit 1

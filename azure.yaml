@@ -1,0 +1,14 @@
+name: AzureMCP-CMS
+metadata:
+  template: AzureMCP-CMS@1.0.0
+services:
+  admcms-mcp:
+    project: .
+    language: python
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+infra:
+  provider: bicep
+  path: infra
+  module: main

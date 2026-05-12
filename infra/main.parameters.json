@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "prod"
+    },
+    "location": {
+      "value": "westeurope"
+    },
+    "deployerPrincipalId": {
+      "value": "${AZURE_DEPLOYER_PRINCIPAL_ID}"
+    },
+    "entraAppId": {
+      "value": "${ENTRA_APP_ID=00000000-0000-0000-0000-000000000000}"
+    },
+    "entraAllowedTenants": {
+      "value": "${ENTRA_ALLOWED_TENANTS=bf030cec-d527-4f3c-9843-db5473bee3f7}"
+    },
+    "authDisabled": {
+      "value": false
+    },
+    "admcmsServer": {
+      "value": "cmsnl.database.windows.net"
+    },
+    "admcmsDatabase": {
+      "value": "ADMCMS-PRODUCTION-REPL01"
+    }
+  }
+}

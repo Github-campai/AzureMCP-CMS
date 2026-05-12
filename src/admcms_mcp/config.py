@@ -1,0 +1,78 @@
+"""Typed settings loaded from environment variables.
+
+In production, secrets referenced here (DB password, allowlist JSON) are
+loaded from Azure Key Vault at runtime via `keyvault.py`, not from env.
+Only non-secret config lives here.
+"""
+
+from functools import lru_cache
+from typing import Any
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import EnvSettingsSource
+
+
+class EnvSettingsSourceNoJson(EnvSettingsSource):
+    """Custom env source that treats all values as strings (no JSON parsing)."""
+
+    def prepare_field_value(
+        self, field_name: str, field, value: Any, value_is_complex: bool
+    ) -> Any:
+        """Override to skip JSON parsing for complex types."""
+        # Always return the raw value for env vars; let validators handle parsing
+        return value
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Azure Key Vault — where secrets come from in production
+    key_vault_uri: str
+
+    # Entra app registration identifiers
+    entra_app_id: str
+    entra_allowed_tenants: list[str]
+    campai_allowed_group: str = ""  # optional; empty disables group check
+
+    # Database connection (non-secret parts; password comes from Key Vault)
+    admcms_server: str = "cmsnl.database.windows.net"
+    admcms_database: str = "ADMCMS-PRODUCTION-REPL01"
+    admcms_driver: str = "ODBC Driver 18 for SQL Server"
+
+    # Escape hatches (development only)
+    auth_disabled: bool = False
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        """Use custom env source that doesn't JSON-parse list types."""
+        return (
+            init_settings,
+            EnvSettingsSourceNoJson(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
+
+    @field_validator("entra_allowed_tenants", mode="before")
+    @classmethod
+    def split_tenants(cls, v):
+        """Split comma-separated string into list of tenants."""
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(",") if t.strip()]
+        return v
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

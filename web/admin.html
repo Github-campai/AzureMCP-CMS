@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Campai ADMCMS — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --campai-green: #00C853;
+    --campai-green-dark: #00A844;
+    --campai-green-bg: rgba(0, 200, 83, 0.08);
+    --campai-navy: #1A1F36;
+    --campai-navy-hover: #2D3456;
+    --campai-gray-50: #F8F9FA;
+    --campai-gray-100: #F1F3F5;
+    --campai-gray-200: #E9ECEF;
+    --campai-gray-300: #DEE2E6;
+    --campai-gray-600: #868E96;
+    --campai-gray-800: #343A40;
+    --campai-warning: #FFB300;
+    --campai-danger: #FF1744;
+    --campai-info: #2979FF;
+    --campai-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --campai-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --campai-radius: 12px;
+    --campai-radius-sm: 8px;
+    --campai-shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; }
+  body {
+    font-family: var(--campai-font);
+    background: var(--campai-gray-50);
+    color: var(--campai-gray-800);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .topbar {
+    background: var(--campai-navy);
+    color: white;
+    padding: 16px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; }
+  .logo-mark {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: var(--campai-green);
+    display: grid; place-items: center;
+    font-weight: 700; color: var(--campai-navy); font-size: 16px;
+  }
+  .logo-text { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+  .logo-sub { font-size: 11px; opacity: .6; }
+  .topbar-right { display: flex; align-items: center; gap: 16px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,.08);
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+  }
+  .chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--campai-gray-600); }
+  .chip-dot.ok { background: var(--campai-green); box-shadow: 0 0 8px rgba(0,200,83,.6); }
+  .chip-dot.err { background: var(--campai-danger); }
+  .topbar a { color: rgba(255,255,255,.75); text-decoration: none; font-size: 13px; }
+  .topbar a:hover { color: white; }
+
+  .tabs {
+    background: white;
+    border-bottom: 1px solid var(--campai-gray-200);
+    padding: 0 32px;
+    display: flex; gap: 4px;
+  }
+  .tab {
+    padding: 14px 18px;
+    cursor: pointer;
+    font-weight: 600; font-size: 13px;
+    color: var(--campai-gray-600);
+    border-bottom: 3px solid transparent;
+    transition: color .15s, border-color .15s;
+  }
+  .tab:hover { color: var(--campai-gray-800); }
+  .tab.active { color: var(--campai-navy); border-bottom-color: var(--campai-green); }
+
+  .wrap { padding: 24px 32px 48px; max-width: 1400px; margin: 0 auto; }
+
+  .card {
+    background: white;
+    border: 1px solid var(--campai-gray-200);
+    border-radius: var(--campai-radius);
+    box-shadow: var(--campai-shadow);
+    overflow: hidden;
+  }
+  .card + .card { margin-top: 20px; }
+  .card-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--campai-gray-200);
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    flex-wrap: wrap;
+  }
+  .card-title { font-weight: 700; font-size: 15px; }
+  .card-sub { font-size: 12px; color: var(--campai-gray-600); margin-top: 2px; }
+  .card-body { padding: 0; }
+  .card-body.padded { padding: 20px; }
+
+  .btn {
+    font-family: var(--campai-font);
+    background: var(--campai-green);
+    color: white; border: none;
+    border-radius: var(--campai-radius-sm);
+    padding: 8px 14px; font-weight: 600; font-size: 12px;
+    cursor: pointer; transition: all .15s;
+  }
+  .btn:hover { background: var(--campai-green-dark); }
+  .btn-secondary {
+    background: white; color: var(--campai-gray-800);
+    border: 1px solid var(--campai-gray-300);
+  }
+  .btn-secondary:hover { background: var(--campai-gray-50); border-color: var(--campai-gray-600); }
+  .btn-ghost {
+    background: transparent; color: var(--campai-gray-600);
+    border: none; padding: 6px 10px; font-size: 12px;
+  }
+  .btn-ghost:hover { color: var(--campai-gray-800); background: var(--campai-gray-100); }
+
+  label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--campai-gray-600); }
+  input[type="text"], input[type="number"], select {
+    font-family: var(--campai-font);
+    font-size: 13px;
+    padding: 7px 10px;
+    border: 1px solid var(--campai-gray-300);
+    border-radius: var(--campai-radius-sm);
+    background: white;
+    min-width: 160px;
+  }
+  input[type="password"] {
+    font-family: var(--campai-font);
+    font-size: 13px;
+    padding: 7px 10px;
+    border: 1px solid var(--campai-gray-300);
+    border-radius: var(--campai-radius-sm);
+    background: white;
+    min-width: 160px;
+  }
+  input[type="checkbox"] { width: 14px; height: 14px; }
+  .filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+  .filters .check { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 8px; }
+
+  .set-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; }
+  .set-grid .field { gap: 6px; }
+  .set-grid input, .set-grid select { width: 100%; min-width: 0; }
+  .field-label { font-weight: 600; font-size: 12px; color: var(--campai-gray-800); }
+  .field-hint { font-size: 11.5px; color: var(--campai-gray-600); line-height: 1.5; }
+  .field-hint code { background: var(--campai-gray-100); padding: 1px 5px; border-radius: 4px; font-family: var(--campai-mono); font-size: 11px; }
+  .field-hint a { color: var(--campai-info); }
+  .btn-row { display: flex; gap: 10px; margin-top: 24px; align-items: center; flex-wrap: wrap; }
+  .btn-row a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+  .feedback {
+    font-size: 12.5px; padding: 10px 14px; border-radius: var(--campai-radius-sm);
+    margin-top: 16px; font-family: var(--campai-mono);
+  }
+  .feedback.ok { background: var(--campai-green-bg); color: var(--campai-green-dark); border: 1px solid rgba(0,200,83,.2); }
+  .feedback.err { background: rgba(255,23,68,.08); color: var(--campai-danger); border: 1px solid rgba(255,23,68,.2); }
+  .feedback.info { background: rgba(41,121,255,.08); color: var(--campai-info); border: 1px solid rgba(41,121,255,.2); }
+  @media (max-width: 720px) { .set-grid { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    text-align: left;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--campai-gray-100);
+    vertical-align: top;
+  }
+  th { background: var(--campai-gray-50); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--campai-gray-600); }
+  tbody tr:hover { background: var(--campai-gray-50); cursor: pointer; }
+  tbody tr.no-hover { cursor: default; }
+  tbody tr.no-hover:hover { background: transparent; }
+
+  .badge {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; font-weight: 600;
+    background: var(--campai-gray-100); color: var(--campai-gray-800);
+  }
+  .badge.err { background: rgba(255,23,68,.1); color: var(--campai-danger); }
+  .badge.ok { background: var(--campai-green-bg); color: var(--campai-green-dark); }
+  .badge.info { background: rgba(41,121,255,.1); color: var(--campai-info); }
+
+  .mono { font-family: var(--campai-mono); font-size: 12px; }
+  .num-cell { font-variant-numeric: tabular-nums; text-align: right; }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  .stat {
+    background: white;
+    border: 1px solid var(--campai-gray-200);
+    border-radius: var(--campai-radius);
+    padding: 16px 20px;
+    box-shadow: var(--campai-shadow);
+  }
+  .stat-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--campai-gray-600); }
+  .stat-value { font-size: 24px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .stat-value.err { color: var(--campai-danger); }
+
+  .details {
+    padding: 16px 20px;
+    background: var(--campai-gray-50);
+    border-bottom: 1px solid var(--campai-gray-200);
+    display: none;
+  }
+  tr.open + tr.detail-row .details { display: block; }
+  .sql-block {
+    background: #1A1F36;
+    color: #E9ECEF;
+    padding: 12px 16px;
+    border-radius: var(--campai-radius-sm);
+    font-family: var(--campai-mono);
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-top: 8px;
+  }
+  .sql-meta { font-size: 11px; color: var(--campai-gray-600); margin-top: 4px; }
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; margin: 8px 0; font-size: 13px; }
+  .kv dt { color: var(--campai-gray-600); font-weight: 500; }
+  .kv dd { font-family: var(--campai-mono); font-size: 12px; }
+
+  .muted { color: var(--campai-gray-600); }
+  .hidden { display: none !important; }
+
+  .tool-card {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--campai-gray-100);
+  }
+  .tool-card:last-child { border-bottom: none; }
+  .tool-name { font-weight: 700; font-size: 14px; }
+  .tool-desc { font-size: 13px; color: var(--campai-gray-800); margin-top: 6px; white-space: pre-wrap; }
+  .tool-args { font-family: var(--campai-mono); font-size: 12px; color: var(--campai-gray-600); margin-top: 6px; }
+
+  .empty {
+    padding: 48px 24px;
+    text-align: center;
+    color: var(--campai-gray-600);
+  }
+
+  @media (max-width: 800px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo-mark">C</div>
+    <div>
+      <div class="logo-text">ADMCMS Admin</div>
+      <div class="logo-sub">MCP Server · Audit &amp; Tooling</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="chip"><span id="healthDot" class="chip-dot"></span><span id="healthText">connecting…</span></span>
+    <a href="#settings" onclick="activateTab('settings'); return false;" title="Instellingen">⚙ Instellingen</a>
+    <a href="chat.html">Chat →</a>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab" data-tab="settings">Instellingen</div>
+  <div class="tab active" data-tab="stats">Stats</div>
+  <div class="tab" data-tab="audit">Audit Log</div>
+  <div class="tab" data-tab="tools">Tools</div>
+  <div class="tab" data-tab="health">Health</div>
+</div>
+
+<div class="wrap">
+  <!-- SETTINGS TAB -->
+  <section id="tab-settings" class="tab-panel hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">Instellingen</div>
+          <div class="card-sub">Centrale configuratie voor zowel admin page als chat app — opgeslagen in je browser (localStorage).</div>
+        </div>
+      </div>
+      <div class="card-body padded">
+        <div class="set-grid">
+          <label class="field">
+            <span class="field-label">Admin Backend URL</span>
+            <input type="text" id="set_base" placeholder="http://localhost:8000" />
+            <span class="field-hint">
+              Root-URL van de MCP server (<strong>zonder</strong> <code>/mcp</code>).
+              Deze pagina gebruikt dit voor alle <code>/admin/*</code> endpoints.<br/>
+              Lokaal: <code>http://localhost:8000</code>.
+              Via tunnel: <code>https://&lt;tunnel&gt;.trycloudflare.com</code>.
+            </span>
+          </label>
+          <label class="field">
+            <span class="field-label">MCP URL</span>
+            <input type="text" id="set_mcp" placeholder="https://your-tunnel.trycloudflare.com/mcp/" />
+            <span class="field-hint">
+              Gebruikt door de chat app (Anthropic roept dit aan). Moet <strong>publiek bereikbaar</strong> zijn.
+              <code>localhost</code> werkt hier niet — gebruik cloudflared tunnel.
+              Meestal = Admin Backend URL + <code>/mcp/</code>.
+            </span>
+          </label>
+          <label class="field">
+            <span class="field-label">Anthropic API Key</span>
+            <input type="password" id="set_api" placeholder="sk-ant-…" autocomplete="off" />
+            <span class="field-hint">
+              Van <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>.
+              Alleen gebruikt door de chat app.
+            </span>
+          </label>
+          <label class="field">
+            <span class="field-label">Model</span>
+            <select id="set_model">
+              <option value="claude-sonnet-4-5">Claude Sonnet 4.5 (snel, goed voor queries)</option>
+              <option value="claude-opus-4-6">Claude Opus 4.6 (beste reasoning)</option>
+              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (goedkoop)</option>
+            </select>
+            <span class="field-hint">Standaardmodel voor de chat.</span>
+          </label>
+          <label class="field" style="grid-column: 1 / -1;">
+            <span class="field-label">MCP Authorization Token (optioneel)</span>
+            <input type="password" id="set_token" placeholder="Bearer token — alleen bij AUTH_DISABLED=false" autocomplete="off" />
+            <span class="field-hint">Leeg laten als de server in <code>AUTH_DISABLED=true</code> draait (lokale dev). In prod: Entra JWT.</span>
+          </label>
+        </div>
+        <div class="btn-row">
+          <button class="btn" onclick="saveSettings()">Opslaan</button>
+          <button class="btn btn-secondary" onclick="testSettings()">Test verbinding</button>
+          <button class="btn btn-ghost" onclick="clearSettings()">Wissen</button>
+          <a class="btn btn-secondary" href="chat.html" style="margin-left:auto;">Naar Chat →</a>
+        </div>
+        <div id="settings_feedback" class="feedback hidden"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STATS TAB -->
+  <section id="tab-stats" class="tab-panel">
+    <div class="stats-grid">
+      <div class="stat">
+        <div class="stat-label">Total calls (7d)</div>
+        <div class="stat-value" id="statTotal">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Errors (7d)</div>
+        <div class="stat-value err" id="statErrors">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Error rate</div>
+        <div class="stat-value" id="statErrPct">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Since</div>
+        <div class="stat-value mono" id="statSince" style="font-size:14px">—</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">Per-tool statistics</div>
+          <div class="card-sub">Calls, avg duration, errors — last 7 days</div>
+        </div>
+        <button class="btn btn-secondary" onclick="loadStats()">Refresh</button>
+      </div>
+      <div class="card-body">
+        <table>
+          <thead><tr>
+            <th>Tool</th>
+            <th class="num-cell">Calls</th>
+            <th class="num-cell">Avg Duration (ms)</th>
+            <th class="num-cell">Errors</th>
+          </tr></thead>
+          <tbody id="statsBody"><tr class="no-hover"><td colspan="4" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- AUDIT TAB -->
+  <section id="tab-audit" class="tab-panel hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">Audit log</div>
+          <div class="card-sub">Every MCP tool invocation with its SQL queries</div>
+        </div>
+        <div class="filters">
+          <label class="field">Tool
+            <select id="filterTool"><option value="">All</option></select>
+          </label>
+          <label class="field">Limit
+            <input type="number" id="filterLimit" value="100" min="1" max="1000" />
+          </label>
+          <label class="field check">
+            <input type="checkbox" id="filterErrors" /> Errors only
+          </label>
+          <button class="btn" onclick="loadAudit()">Apply</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <table>
+          <thead><tr>
+            <th>Timestamp</th>
+            <th>Tool</th>
+            <th>User</th>
+            <th class="num-cell">Duration (ms)</th>
+            <th class="num-cell">Rows</th>
+            <th>Status</th>
+          </tr></thead>
+          <tbody id="auditBody"><tr class="no-hover"><td colspan="6" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TOOLS TAB -->
+  <section id="tab-tools" class="tab-panel hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">Registered MCP tools</div>
+          <div class="card-sub" id="toolsCount">—</div>
+        </div>
+        <button class="btn btn-secondary" onclick="loadTools()">Refresh</button>
+      </div>
+      <div class="card-body" id="toolsBody">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HEALTH TAB -->
+  <section id="tab-health" class="tab-panel hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">Server health</div>
+          <div class="card-sub">Audit store status, uptime, connectivity</div>
+        </div>
+        <button class="btn btn-secondary" onclick="loadHealth()">Refresh</button>
+      </div>
+      <div class="card-body padded">
+        <dl class="kv" id="healthKv"><dt class="muted">Loading…</dt><dd></dd></dl>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  // Shared settings — localStorage keys used by both admin and chat.
+  const SET = {
+    BASE:  'admin_base_url',    // admin endpoints root
+    MCP:   'campai_mcp_url',    // MCP endpoint used by chat
+    API:   'campai_api_key',    // Anthropic key used by chat
+    MODEL: 'campai_model',      // chat model
+    TOKEN: 'campai_mcp_token',  // optional MCP bearer
+  };
+
+  function getSetting(key) {
+    // Migrate from older sessionStorage values if localStorage is empty.
+    const ls = localStorage.getItem(key);
+    if (ls !== null) return ls;
+    const ss = sessionStorage.getItem(key);
+    if (ss !== null) {
+      localStorage.setItem(key, ss);
+      return ss;
+    }
+    return '';
+  }
+
+  const _DEFAULT_BASE = (window.location.protocol === 'file:')
+    ? 'http://localhost:8000'
+    : window.location.origin;
+  let BASE_URL = (getSetting(SET.BASE) || _DEFAULT_BASE).replace(/\/$/, '');
+  const API = (path) => path.startsWith('http') ? path : (BASE_URL + path);
+
+  function loadSettingsForm() {
+    const $$ = (id) => document.getElementById(id);
+    $$('set_base').value = getSetting(SET.BASE) || _DEFAULT_BASE;
+    $$('set_mcp').value = getSetting(SET.MCP);
+    $$('set_api').value = getSetting(SET.API);
+    $$('set_model').value = getSetting(SET.MODEL) || 'claude-sonnet-4-5';
+    $$('set_token').value = getSetting(SET.TOKEN);
+  }
+
+  function feedback(kind, msg) {
+    const el = document.getElementById('settings_feedback');
+    el.className = 'feedback ' + kind;
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  function saveSettings() {
+    const $$ = (id) => document.getElementById(id).value.trim();
+    const base = ($$('set_base') || _DEFAULT_BASE).replace(/\/$/, '');
+    localStorage.setItem(SET.BASE, base);
+    localStorage.setItem(SET.MCP, $$('set_mcp'));
+    localStorage.setItem(SET.API, $$('set_api'));
+    localStorage.setItem(SET.MODEL, document.getElementById('set_model').value);
+    localStorage.setItem(SET.TOKEN, $$('set_token'));
+    BASE_URL = base;
+    feedback('ok', `Opgeslagen. Backend URL = ${base}`);
+    loadHealth();
+  }
+
+  function clearSettings() {
+    if (!confirm('Alle opgeslagen instellingen wissen?')) return;
+    Object.values(SET).forEach(k => {
+      localStorage.removeItem(k);
+      sessionStorage.removeItem(k);
+    });
+    loadSettingsForm();
+    BASE_URL = _DEFAULT_BASE;
+    feedback('ok', 'Instellingen gewist.');
+  }
+
+  async function testSettings() {
+    const base = (document.getElementById('set_base').value.trim() || _DEFAULT_BASE).replace(/\/$/, '');
+    feedback('info', `Verbinden met ${base}/admin/health …`);
+    try {
+      const r = await fetch(base + '/admin/health');
+      if (!r.ok) {
+        feedback('err', `HTTP ${r.status} — ${r.statusText}`);
+        return;
+      }
+      const body = await r.json();
+      feedback('ok', `OK · store=${body.audit_store.kind} · uptime=${body.uptime_seconds}s · calls(7d)=${body.audit_store.total_calls_last_7d}`);
+    } catch (e) {
+      feedback('err', `Fout: ${e.message} (Is uvicorn gestart? Staat CORS aan?)`);
+    }
+  }
+
+  // Tabs
+  function activateTab(name) {
+    const tab = document.querySelector(`.tab[data-tab="${name}"]`);
+    if (!tab) return;
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    tab.classList.add('active');
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+    document.getElementById('tab-' + name).classList.remove('hidden');
+    if (name === 'audit') loadAudit();
+    if (name === 'tools') loadTools();
+    if (name === 'stats') loadStats();
+    if (name === 'health') loadHealth();
+    if (name === 'settings') loadSettingsForm();
+  }
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      activateTab(t.dataset.tab);
+      history.replaceState(null, '', '#' + t.dataset.tab);
+    });
+  });
+  window.addEventListener('hashchange', () => {
+    const h = location.hash.slice(1);
+    if (h) activateTab(h);
+  });
+
+  const fmtMs = (n) => n == null ? '—' : Number(n).toLocaleString('nl-NL', {maximumFractionDigits:0});
+  const fmtPct = (n) => n == null ? '—' : Number(n).toFixed(2) + '%';
+  const fmtTs = (iso) => {
+    try { return new Date(iso).toLocaleString('nl-NL', {hour12:false}); }
+    catch { return iso; }
+  };
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  async function jget(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  // STATS
+  async function loadStats() {
+    try {
+      const s = await jget(API('/admin/stats'));
+      document.getElementById('statTotal').textContent = fmtMs(s.total_calls);
+      document.getElementById('statErrors').textContent = fmtMs(s.total_errors);
+      document.getElementById('statErrPct').textContent = fmtPct(s.error_rate_pct);
+      document.getElementById('statSince').textContent = fmtTs(s.since);
+      const body = document.getElementById('statsBody');
+      if (!s.per_tool?.length) {
+        body.innerHTML = '<tr class="no-hover"><td colspan="4" class="empty">No activity yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = s.per_tool.map(t => `
+        <tr class="no-hover">
+          <td><code>${esc(t.tool_name)}</code></td>
+          <td class="num-cell">${fmtMs(t.calls)}</td>
+          <td class="num-cell">${fmtMs(t.avg_duration_ms)}</td>
+          <td class="num-cell">${t.errors > 0 ? `<span class="badge err">${t.errors}</span>` : '0'}</td>
+        </tr>`).join('');
+      // also populate filter dropdown
+      const sel = document.getElementById('filterTool');
+      const existing = new Set([...sel.options].map(o => o.value));
+      s.per_tool.forEach(t => {
+        if (!existing.has(t.tool_name)) {
+          const opt = document.createElement('option');
+          opt.value = opt.textContent = t.tool_name;
+          sel.appendChild(opt);
+        }
+      });
+    } catch (e) {
+      document.getElementById('statsBody').innerHTML =
+        `<tr class="no-hover"><td colspan="4" class="empty">Error: ${esc(e.message)}</td></tr>`;
+    }
+  }
+
+  // AUDIT
+  async function loadAudit() {
+    const params = new URLSearchParams();
+    const tool = document.getElementById('filterTool').value;
+    if (tool) params.set('tool', tool);
+    params.set('limit', document.getElementById('filterLimit').value || '100');
+    if (document.getElementById('filterErrors').checked) params.set('errors_only', 'true');
+    const body = document.getElementById('auditBody');
+    body.innerHTML = '<tr class="no-hover"><td colspan="6" class="empty">Loading…</td></tr>';
+    try {
+      const r = await jget(API('/admin/audit?' + params));
+      if (!r.entries?.length) {
+        body.innerHTML = '<tr class="no-hover"><td colspan="6" class="empty">No entries.</td></tr>';
+        return;
+      }
+      body.innerHTML = r.entries.flatMap(e => {
+        const status = e.error
+          ? `<span class="badge err">${esc(e.error).slice(0,40)}</span>`
+          : `<span class="badge ok">ok</span>`;
+        return [
+          `<tr data-id="${esc(e.id)}" onclick="toggleAudit(this, '${esc(e.id)}')">
+            <td class="mono">${esc(fmtTs(e.timestamp))}</td>
+            <td><code>${esc(e.tool_name)}</code></td>
+            <td>${esc(e.user_id || '—')}</td>
+            <td class="num-cell">${fmtMs(e.duration_ms)}</td>
+            <td class="num-cell">${fmtMs(e.row_count)}</td>
+            <td>${status}</td>
+          </tr>`,
+          `<tr class="detail-row no-hover"><td colspan="6" style="padding:0"><div class="details" id="detail-${esc(e.id)}"></div></td></tr>`
+        ];
+      }).join('');
+    } catch (e) {
+      body.innerHTML = `<tr class="no-hover"><td colspan="6" class="empty">Error: ${esc(e.message)}</td></tr>`;
+    }
+  }
+
+  async function toggleAudit(row, id) {
+    row.classList.toggle('open');
+    if (!row.classList.contains('open')) return;
+    const box = document.getElementById('detail-' + id);
+    box.innerHTML = '<div class="muted">Loading details…</div>';
+    try {
+      const full = await jget(API('/admin/audit/' + encodeURIComponent(id)));
+      const sqlHtml = (full.sql_queries || []).map((q, i) => `
+        <div class="sql-block">${esc(q.sql)}</div>
+        <div class="sql-meta">#${i+1} · params: ${esc(JSON.stringify(q.params || []))} · ${fmtMs(q.duration_ms)} ms · ${fmtMs(q.row_count)} rows</div>
+      `).join('');
+      box.innerHTML = `
+        <dl class="kv">
+          <dt>ID</dt><dd>${esc(full.id)}</dd>
+          <dt>User</dt><dd>${esc(full.user_id || '—')}</dd>
+          <dt>Duration</dt><dd>${fmtMs(full.duration_ms)} ms</dd>
+          <dt>Rows</dt><dd>${fmtMs(full.row_count)}</dd>
+          <dt>Args</dt><dd>${esc(JSON.stringify(full.args, null, 2))}</dd>
+          ${full.error ? `<dt>Error</dt><dd><span class="badge err">${esc(full.error)}</span></dd>` : ''}
+          ${full.result_summary ? `<dt>Summary</dt><dd>${esc(JSON.stringify(full.result_summary, null, 2))}</dd>` : ''}
+        </dl>
+        ${sqlHtml || '<div class="muted">No SQL queries recorded.</div>'}
+      `;
+    } catch (e) {
+      box.innerHTML = `<div class="muted">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  // TOOLS
+  async function loadTools() {
+    const body = document.getElementById('toolsBody');
+    body.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const r = await jget(API('/admin/tools'));
+      document.getElementById('toolsCount').textContent = `${r.count} tools registered`;
+      body.innerHTML = r.tools.map(t => {
+        const props = t.input_schema?.properties || {};
+        const args = Object.entries(props).map(([k, v]) => {
+          const type = v.type || v.anyOf?.[0]?.type || 'any';
+          return `${k}: ${type}`;
+        }).join(', ');
+        return `
+          <div class="tool-card">
+            <div class="tool-name">${esc(t.name)}</div>
+            ${t.description ? `<div class="tool-desc">${esc(t.description)}</div>` : ''}
+            ${args ? `<div class="tool-args">(${esc(args)})</div>` : ''}
+          </div>`;
+      }).join('');
+    } catch (e) {
+      body.innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  // HEALTH
+  async function loadHealth() {
+    const kv = document.getElementById('healthKv');
+    kv.innerHTML = '<dt class="muted">Loading…</dt><dd></dd>';
+    try {
+      const h = await jget(API('/admin/health'));
+      updateHealthChip(h.status === 'ok');
+      kv.innerHTML = `
+        <dt>Status</dt><dd>${h.status === 'ok' ? '<span class="badge ok">ok</span>' : '<span class="badge err">'+esc(h.status)+'</span>'}</dd>
+        <dt>Uptime</dt><dd>${fmtMs(h.uptime_seconds)} s</dd>
+        <dt>Audit store</dt><dd>${esc(h.audit_store.kind)}</dd>
+        <dt>Store path</dt><dd>${esc(h.audit_store.path || '—')}</dd>
+        <dt>Store OK</dt><dd>${h.audit_store.ok ? '<span class="badge ok">yes</span>' : '<span class="badge err">no</span>'}</dd>
+        <dt>Calls (7d)</dt><dd>${fmtMs(h.audit_store.total_calls_last_7d)}</dd>
+      `;
+    } catch (e) {
+      updateHealthChip(false);
+      kv.innerHTML = `<dt class="muted">Error</dt><dd>${esc(e.message)}</dd>`;
+    }
+  }
+
+  function updateHealthChip(ok) {
+    const dot = document.getElementById('healthDot');
+    const txt = document.getElementById('healthText');
+    dot.className = 'chip-dot ' + (ok ? 'ok' : 'err');
+    txt.textContent = ok ? 'healthy' : 'degraded';
+  }
+
+  // Initial load — honour #hash, else default to Stats.
+  const _initialHash = location.hash.slice(1);
+  if (_initialHash && document.querySelector(`.tab[data-tab="${_initialHash}"]`)) {
+    activateTab(_initialHash);
+  } else {
+    loadStats();
+  }
+  loadHealth();
+  loadSettingsForm();
+  // Refresh health every 30s
+  setInterval(loadHealth, 30000);
+</script>
+
+</body>
+</html>
