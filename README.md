@@ -30,7 +30,8 @@ Zie [`docs/OPERATING-MODEL.md`](docs/OPERATING-MODEL.md) voor de verantwoordelij
 
 - **Roland — hoe test ik dit?** → [`docs/TESTING.md`](docs/TESTING.md)
 - **CMS IT-admin — hoe geef ik onze tenant toegang?** → [`docs/ONBOARDING-CUSTOMER.md`](docs/ONBOARDING-CUSTOMER.md)
-- **CMS eindgebruiker — hoe gebruik ik dit in Claude/Copilot?** → [`docs/CLIENT-SETUP.md`](docs/CLIENT-SETUP.md)
+- **CMS eindgebruiker — hoe gebruik ik dit in Claude (simpel)?** → [`docs/CMS-USER-INSTALL.md`](docs/CMS-USER-INSTALL.md)
+- **CMS eindgebruiker — alle clients (Claude, Cursor, VS Code, Copilot Studio)?** → [`docs/CLIENT-SETUP.md`](docs/CLIENT-SETUP.md)
 - **Campai ops — hoe deploy/restart/log ik?** → [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - **Iemand nieuwe op een MCP-project — hoe is dit gebouwd?** → [`docs/superpowers/specs/2026-05-12-azuremcp-cms-design.md`](docs/superpowers/specs/2026-05-12-azuremcp-cms-design.md)
 
