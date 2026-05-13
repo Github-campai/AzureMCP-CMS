@@ -15,7 +15,7 @@ Twee manieren om te testen: **lokaal** (snelle iteratie, geen Azure nodig) of
 
 ## Toegang krijgen (eenmalig)
 
-Jouw Campai-account moet op de allowlist staan in Key Vault. Vraag Janneke om je
+Jouw Campai-account moet op de allowlist staan in Key Vault. Vraag om je
 Entra OID toe te voegen aan secret `admcms-allowlist` in Key Vault `cms-mcp-kv-prod`.
 
 Je OID vind je met:
