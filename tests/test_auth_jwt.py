@@ -40,6 +40,21 @@ class TestValidateJwt:
         with pytest.raises(InvalidToken, match="audience"):
             validate_jwt(token)
 
+    def test_audience_accepts_both_v1_and_v2_forms(self, make_token, jwks_patch, monkeypatch):
+        """ENTRA_APP_ID set as bare GUID must accept tokens with api://<guid> audience."""
+        monkeypatch.setenv("KEY_VAULT_URI", "https://kv.vault.azure.net/")
+        monkeypatch.setenv("ENTRA_APP_ID", "admcms-mcp")
+        monkeypatch.setenv("ENTRA_ALLOWED_TENANTS", "campai-tenant-id,cms-lelystad-tenant-id")
+        from admcms_mcp.config import get_settings
+
+        get_settings.cache_clear()
+        # v1-style token with api:// prefix
+        token_v1 = make_token(aud="api://admcms-mcp")
+        assert validate_jwt(token_v1)["oid"] == "user-oid-1"
+        # v2-style token with bare GUID
+        token_v2 = make_token(aud="admcms-mcp")
+        assert validate_jwt(token_v2)["oid"] == "user-oid-1"
+
     def test_untrusted_tenant_rejected(self, make_token, jwks_patch, settings_patch):
         token = make_token(
             iss="https://login.microsoftonline.com/hostile-tenant/v2.0",

@@ -81,11 +81,12 @@ def validate_jwt(token: str) -> dict[str, Any]:
     if not exp or exp < time.time():
         raise InvalidToken("Token is expired")
 
-    # aud
-    expected_aud = settings.entra_app_id
+    # aud — accept both v2 bare-GUID form and v1 `api://<guid>` form
+    expected_auds = {settings.entra_app_id, f"api://{settings.entra_app_id}"}
     aud = claims.get("aud")
-    if aud != expected_aud and expected_aud not in (aud if isinstance(aud, list) else [aud]):
-        raise InvalidToken(f"Wrong audience: got {aud}, expected {expected_aud}")
+    aud_values = set(aud) if isinstance(aud, list) else {aud}
+    if not (aud_values & expected_auds):
+        raise InvalidToken(f"Wrong audience: got {aud}, expected one of {expected_auds}")
 
     # iss (must exactly match one of the allowed tenant endpoint forms)
     iss = claims.get("iss", "")
