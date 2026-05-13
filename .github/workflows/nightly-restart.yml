@@ -1,0 +1,57 @@
+name: Nightly restart Container App
+
+# Restarts the production Container App revision every night.
+# Runs at 23:00 UTC = 01:00 CET (winter) / 01:00 CEST (summer Amsterdam).
+# GitHub Actions cron is UTC-only, so this drifts ±1h with DST; close enough.
+
+on:
+  schedule:
+    - cron: '0 23 * * *'
+  workflow_dispatch:  # manual trigger via Actions tab
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_SUBSCRIPTION_ID: 1886dd8f-1ce7-4af2-8491-338341544b55
+  RG: CMS-MCP-rg-prod
+  APP: cms-mcp-app-prod
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (federated OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Restart active revision
+        run: |
+          REV=$(az containerapp revision list \
+            --name "$APP" --resource-group "$RG" \
+            --query "[?properties.active].name | [0]" -o tsv)
+          echo "Restarting revision: $REV"
+          az containerapp revision restart \
+            --name "$APP" --resource-group "$RG" \
+            --revision "$REV"
+
+      - name: Verify health after restart
+        run: |
+          FQDN=$(az containerapp show \
+            --name "$APP" --resource-group "$RG" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          for i in 1 2 3 4 5 6; do
+            STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "https://$FQDN/healthz" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "✓ /healthz returned 200 after restart"
+              exit 0
+            fi
+            echo "Attempt $i: got $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::Health check did not return 200 after 1 minute"
+          exit 1

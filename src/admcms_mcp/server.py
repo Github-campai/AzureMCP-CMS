@@ -18,7 +18,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from admcms_mcp.admin import build_admin_routes
@@ -49,7 +49,7 @@ from admcms_mcp.tools import search_products as _search_products
 
 logger = logging.getLogger(__name__)
 
-_PUBLIC_PATHS = frozenset({"/healthz", "/.well-known/oauth-protected-resource"})
+_PUBLIC_PATHS = frozenset({"/", "/healthz", "/.well-known/oauth-protected-resource"})
 
 
 class EntraAuthMiddleware(BaseHTTPMiddleware):
@@ -131,6 +131,101 @@ def _sanitize(detail: str) -> str:
 
 async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
+
+
+_INDEX_HTML = """<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<title>ADMCMS MCP Server</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 640px; margin: 6rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.55; }}
+  h1 {{ font-size: 1.5rem; margin-bottom: 0.5rem; }}
+  .badge {{ display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px;
+            font-size: 0.85rem; background: #e8f5e9; color: #1b5e20; margin-bottom: 1.5rem; }}
+  .ok {{ background: #e8f5e9; color: #1b5e20; }}
+  .info {{ background: #e3f2fd; color: #0d47a1; }}
+  code {{ background: #f4f4f5; padding: 0.1rem 0.4rem; border-radius: 4px;
+          font-size: 0.9em; }}
+  ul {{ padding-left: 1.2rem; }}
+  li {{ margin-bottom: 0.3rem; }}
+  .small {{ color: #6b7280; font-size: 0.85rem; margin-top: 2rem; }}
+  a {{ color: #1d4ed8; }}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+<div class="badge {badge_class}">{badge_text}</div>
+{body}
+<p class="small">ADMCMS MCP Server &middot; Beheerd door Campai &middot;
+<a href="/healthz">healthz</a> &middot;
+<a href="/.well-known/oauth-protected-resource">OAuth metadata</a></p>
+</body>
+</html>"""
+
+
+async def index(request: Request) -> HTMLResponse:
+    params = request.query_params
+    if params.get("admin_consent") == "True":
+        tenant = params.get("tenant", "")
+        tenant_html = f"<p>Tenant: <code>{tenant}</code></p>" if tenant else ""
+        body = (
+            "<p>De CMS-MCP-API is succesvol toegevoegd aan jullie Microsoft Entra "
+            "tenant. Gebruikers in de bijbehorende security group kunnen nu via "
+            "Claude, Copilot of Cursor de ADMCMS-data bevragen.</p>"
+            f"{tenant_html}"
+            "<p>Je kunt dit venster nu sluiten.</p>"
+        )
+        return HTMLResponse(
+            _INDEX_HTML.format(
+                title="Consent verleend",
+                badge_class="ok",
+                badge_text="Geslaagd",
+                body=body,
+            )
+        )
+    if "error" in params:
+        err = params.get("error", "")
+        desc = params.get("error_description", "")
+        body = (
+            "<p>Microsoft Entra heeft de aanvraag afgewezen.</p>"
+            f"<p><strong>Error:</strong> <code>{err}</code></p>"
+            f"<p><strong>Detail:</strong> {desc}</p>"
+            "<p>Neem contact op met Campai (<a href='mailto:Janneke@campai.nl'>"
+            "Janneke@campai.nl</a>) als dit blijft optreden.</p>"
+        )
+        return HTMLResponse(
+            _INDEX_HTML.format(
+                title="Consent mislukt",
+                badge_class="info",
+                badge_text="Fout",
+                body=body,
+            ),
+            status_code=400,
+        )
+    body = (
+        "<p>Dit is de MCP-server voor de ADMCMS-database, gehost door Campai "
+        "voor CMS Lelystad.</p>"
+        "<p>Endpoints:</p>"
+        "<ul>"
+        "<li><code>POST /mcp</code> &mdash; MCP Streamable HTTP (Bearer JWT vereist)</li>"
+        "<li><code>GET /healthz</code> &mdash; health check</li>"
+        "<li><code>GET /.well-known/oauth-protected-resource</code> &mdash; OAuth metadata</li>"
+        "<li><code>GET /admin/tools</code> &mdash; tool registry (Bearer JWT)</li>"
+        "</ul>"
+        "<p>Voor toegang: configureer Claude/Copilot/Cursor met deze server-URL. "
+        "Documentatie: <a href='https://github.com/Github-campai/AzureMCP-CMS'>"
+        "github.com/Github-campai/AzureMCP-CMS</a></p>"
+    )
+    return HTMLResponse(
+        _INDEX_HTML.format(
+            title="ADMCMS MCP",
+            badge_class="info",
+            badge_text="Actief",
+            body=body,
+        )
+    )
 
 
 async def oauth_protected_resource(request: Request) -> JSONResponse:
@@ -764,6 +859,7 @@ def build_app() -> Starlette:
             yield
 
     routes = [
+        Route("/", index, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
         Route(
             "/.well-known/oauth-protected-resource",
