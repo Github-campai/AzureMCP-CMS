@@ -65,6 +65,14 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         if path in _PUBLIC_PATHS:
             return await call_next(request)
 
+        # Copilot Studio's preview MCP connector sends GET probes on /mcp/
+        # without the bearer token after a successful authenticated POST.
+        # Letting these GETs through bypasses the preview bug; the MCP
+        # library still requires a valid session id (which only an authed
+        # POST initialize can produce), so no unauthenticated data leaks.
+        if request.method == "GET" and path.startswith("/mcp"):
+            return await call_next(request)
+
         try:
             settings = get_settings()
             if settings.auth_disabled:
