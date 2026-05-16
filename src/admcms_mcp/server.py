@@ -905,13 +905,10 @@ def build_app() -> Starlette:
         Middleware(McpTrailingSlashMiddleware),
         Middleware(EntraAuthMiddleware),
     ]
-    # redirect_slashes=False prevents Starlette from emitting 307 redirects
-    # when clients POST to /mcp (without trailing slash). Copilot Studio's
-    # preview MCP connector loses its body/auth on the 307 follow. We add
-    # explicit handling instead so /mcp and /mcp/ both route to the MCP app.
-    return Starlette(
-        routes=routes, middleware=middleware, lifespan=lifespan, redirect_slashes=False
-    )
+    # McpTrailingSlashMiddleware rewrites /mcp -> /mcp/ in-place before the
+    # router sees it, so the MCP-mounted ASGI app handles both forms without
+    # ever emitting a 307 (which Copilot Studio's preview connector mishandles).
+    return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
 
 
 app = build_app()
