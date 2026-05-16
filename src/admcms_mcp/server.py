@@ -52,6 +52,21 @@ logger = logging.getLogger(__name__)
 _PUBLIC_PATHS = frozenset({"/", "/healthz", "/.well-known/oauth-protected-resource"})
 
 
+class McpTrailingSlashMiddleware(BaseHTTPMiddleware):
+    """Rewrite /mcp (no slash) to /mcp/ in-place.
+
+    Avoids the 307 redirect that Starlette would emit otherwise — some MCP
+    clients (notably Copilot Studio preview) lose their POST body or
+    Authorization header when following the redirect.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/mcp":
+            request.scope["path"] = "/mcp/"
+            request.scope["raw_path"] = b"/mcp/"
+        return await call_next(request)
+
+
 class EntraAuthMiddleware(BaseHTTPMiddleware):
     """Validates bearer tokens on non-public paths.
 
@@ -887,9 +902,16 @@ def build_app() -> Starlette:
             allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["*"],
         ),
+        Middleware(McpTrailingSlashMiddleware),
         Middleware(EntraAuthMiddleware),
     ]
-    return Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
+    # redirect_slashes=False prevents Starlette from emitting 307 redirects
+    # when clients POST to /mcp (without trailing slash). Copilot Studio's
+    # preview MCP connector loses its body/auth on the 307 follow. We add
+    # explicit handling instead so /mcp and /mcp/ both route to the MCP app.
+    return Starlette(
+        routes=routes, middleware=middleware, lifespan=lifespan, redirect_slashes=False
+    )
 
 
 app = build_app()
