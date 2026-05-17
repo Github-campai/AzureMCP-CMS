@@ -876,6 +876,58 @@ def _build_mcp_server() -> FastMCP:
             lambda: _get_order_origin_mix(start_date, end_date, include_ly=include_ly),
         )
 
+    @mcp.tool()
+    def health_check() -> dict:
+        """Diagnostic ping: server up, DB reachable, who-am-I, tool count.
+
+        Use this when you want to confirm end-to-end that the MCP server
+        and its database connection are healthy before running a real
+        query. Returns a single object with sub-statuses; if any
+        component is degraded the top-level status is "degraded" or
+        "down" and the failing components carry an error message.
+        """
+        import time
+        from datetime import datetime, timezone
+
+        from admcms_mcp.db import execute_query
+
+        result: dict = {
+            "status": "ok",
+            "server": {
+                "name": "admcms-mcp",
+                "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "tool_count": 21,
+            },
+            "database": {"status": "ok", "latency_ms": None, "error": None},
+            "caller": {"upn": None, "oid": None, "tid": None},
+        }
+
+        # DB ping
+        db_start = time.perf_counter()
+        try:
+            rows = execute_query("SELECT 1 AS ping", max_rows=1)
+            result["database"]["latency_ms"] = round(
+                (time.perf_counter() - db_start) * 1000, 1
+            )
+            if not rows or rows[0].get("ping") != 1:
+                result["database"]["status"] = "degraded"
+                result["database"]["error"] = "unexpected response from SELECT 1"
+                result["status"] = "degraded"
+        except Exception as e:
+            result["database"]["status"] = "down"
+            result["database"]["error"] = str(e)[:200]
+            result["status"] = "down"
+
+        # Caller (best-effort, not all transports expose request scope)
+        try:
+            user = current_user.get()
+            if user:
+                result["caller"]["upn"] = user
+        except Exception:
+            pass
+
+        return _audited("health_check", {}, lambda: result)
+
     @mcp.resource("admcms://schema-knowledge")
     def schema_resource() -> str:
         """Embedded knowledge about ADMCMS tables and query patterns."""
