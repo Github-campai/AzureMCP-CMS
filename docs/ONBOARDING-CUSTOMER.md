@@ -9,6 +9,13 @@ De ADMCMS MCP-server draait in Campai's Azure tenant, maar de **Entra app
 registratie is multi-tenant**: CMS-gebruikers loggen in met hun eigen
 CMS-account in hun eigen tenant. Geen gastaccounts in Campai nodig.
 
+Toegang loopt via twee **parallelle security groups** — één per tenant:
+- `SG-Campai-ADMCMS-Users` in Campai tenant (voor Campai dev/support)
+- `SG-CMS-MCP-Users` in CMS tenant (voor jullie eindgebruikers — onderstaande stappen)
+
+Beide groups staan onafhankelijk op de allowlist. Elke partij beheert zijn eigen
+group. Geen kruisverkeer.
+
 | Item | Waarde |
 |---|---|
 | MCP endpoint | `https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp` |

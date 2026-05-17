@@ -26,6 +26,19 @@ bruikbaar vanuit Claude, Copilot Studio, Cursor en VS Code.
 
 Zie [`docs/OPERATING-MODEL.md`](docs/OPERATING-MODEL.md) voor de verantwoordelijkheden in detail.
 
+## Toegang krijgen
+
+Toegang wordt verleend via Entra security group membership. Twee groups:
+
+| Tenant | Group | Beheerd door | Voor |
+|---|---|---|---|
+| Campai (`bf030cec-...`) | `SG-Campai-ADMCMS-Users` | Owners: Roland + Janneke | Campai-developers / support |
+| CMS Lelystad (`a92e7c27-...`) | `SG-CMS-MCP-Users` | CMS IT-admin | CMS-eindgebruikers |
+
+Lid maken (Campai-zijde): Roland of Janneke in Entra portal → Groups → `SG-Campai-ADMCMS-Users` → Members → + Add. Direct toegang, geen restart of KV-touch nodig.
+
+Lid maken (CMS-zijde): CMS IT-admin in hun eigen Entra portal — zie [`docs/ONBOARDING-CUSTOMER.md`](docs/ONBOARDING-CUSTOMER.md).
+
 ## Quick links
 
 - **Roland — hoe test ik dit?** → [`docs/TESTING.md`](docs/TESTING.md)
@@ -37,8 +50,9 @@ Zie [`docs/OPERATING-MODEL.md`](docs/OPERATING-MODEL.md) voor de verantwoordelij
 
 ## Wat doet dit?
 
-20 read-only MCP tools op de ADMCMS database (Azure SQL `cmsnl`). Voorbeelden van
-vragen die een AI-assistent kan beantwoorden:
+21 read-only MCP tools op de ADMCMS database (Azure SQL `cmsnl`), plus een
+`health_check` diagnose-tool. Voorbeelden van vragen die een AI-assistent kan
+beantwoorden:
 
 - "Wat zijn onze top 10 klanten dit jaar versus vorig jaar?"
 - "Welke producten hebben verdachte prijzen?"
@@ -50,10 +64,11 @@ De AI roept de juiste tool aan (`get_top_customers`, `detect_price_anomalies`,
 parametriseert, valideert SELECT-only, en geeft JSON terug. Elke call wordt
 geaudit met user, query, duur.
 
-## Tools (20)
+## Tools (21)
 
 | Categorie | Tools |
 |---|---|
+| Diagnose | `health_check` |
 | Schema | `query_database`, `get_schema`, `get_lookups` |
 | Producten | `search_products`, `get_stock_levels`, `get_supplier_purchases` |
 | Omzet | `get_revenue`, `get_revenue_by_business_unit`, `get_margin_report`, `get_kpi_summary`, `get_top_customers` |

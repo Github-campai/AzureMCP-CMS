@@ -18,7 +18,8 @@
 | Entra app `CMS-MCP-API` | Campai tenant | Campai GA voor wijzigingen, daily voor monitoring |
 | GitHub repo `AzureMCP-CMS` | Campai | Campai dev team |
 | ADMCMS database `cmsnl` | CMS (data) + Campai (technisch) | Bestaand, niet door dit project beheerd |
-| Security group `CMS-MCP-Users` | CMS tenant | CMS IT-admin |
+| Security group `SG-CMS-MCP-Users` (`68f3ad86-...`) | CMS tenant | CMS IT-admin |
+| Security group `SG-Campai-ADMCMS-Users` (`bd6ce8cc-...`) | Campai tenant | Owners: Roland + Janneke |
 
 ## Verantwoordelijkheden per partij
 
@@ -27,10 +28,15 @@
 **Dagelijkse ops** (Janneke@campai.nl als primaire contactpersoon):
 - Monitoren van de Container App (Application Insights `CMS-MCP-ai-prod`)
 - Restart / scale-up bij problemen
-- Key Vault secrets roteren wanneer nodig (DB password, allowlist updates)
-- CMS group OIDs toevoegen aan allowlist na onboarding
+- Key Vault secrets roteren wanneer nodig (DB password)
+- Nieuwe Campai-collega's toevoegen aan `SG-Campai-ADMCMS-Users` group (geen KV-touch)
+- Nieuwe CMS-groups toevoegen aan KV allowlist na onboarding (zelden, ~1× per klant)
 - PR-reviews + merges naar `main` (triggert auto-deploy)
 - Incident response
+
+**Roland** (als Owner van `SG-Campai-ADMCMS-Users`):
+- Kan zelfstandig Campai-collega's toevoegen/verwijderen uit de group
+- Voor toegang tot ADMCMS data via Claude/Copilot/Cursor
 
 **Eenmalig / occasioneel** (vereist GA / break-glass account):
 - App registratie aanpassen (scopes, redirect URIs, owners)

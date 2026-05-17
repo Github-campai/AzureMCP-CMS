@@ -55,6 +55,28 @@ az acr build --registry cmsmcpacrprodcr3e --image "admcms-mcp:$tag" --image "adm
 az containerapp update --name cms-mcp-app-prod --resource-group CMS-MCP-rg-prod --image "cmsmcpacrprodcr3e.azurecr.io/admcms-mcp:$tag"
 ```
 
+## Toegangsmodel
+
+Authorisatie via Key Vault secret `admcms-allowlist`. Structure:
+
+```json
+{
+  "users":  ["<oid>", ...],   // individuele Entra OIDs (fallback)
+  "groups": ["<oid>", ...]    // Entra security group OIDs (voorkeur)
+}
+```
+
+**Huidige groups:**
+
+| Group | OID | Tenant | Beheerd door |
+|---|---|---|---|
+| `SG-Campai-ADMCMS-Users` | `bd6ce8cc-033a-482e-a7cd-acd145e6d93f` | Campai (`bf030cec-...`) | Roland + Janneke (owners) |
+| `SG-CMS-MCP-Users` | `68f3ad86-6967-4540-92e5-b8b425ca720d` | CMS Lelystad (`a92e7c27-...`) | CMS IT-admin |
+
+**Nieuwe Campai-user toevoegen**: Entra portal → Groups → `SG-Campai-ADMCMS-Users` → Members → + Add. Direct toegang, geen KV-touch, geen restart.
+
+**Nieuwe CMS-user toevoegen**: CMS IT-admin doet hetzelfde in hun eigen tenant op `SG-CMS-MCP-Users`. Geen actie van Campai-kant.
+
 ## Key Vault secrets beheren
 
 Janneke@campai.nl heeft `Key Vault Secrets Officer` op `cms-mcp-kv-prod`. Direct
@@ -66,7 +88,7 @@ az account set --subscription 1886dd8f-1ce7-4af2-8491-338341544b55
 # DB password roteren
 az keyvault secret set --vault-name cms-mcp-kv-prod --name admcms-db-password --value '<nieuw>'
 
-# Allowlist updaten — group OID toevoegen
+# Allowlist updaten — extra group OID toevoegen (zelden nodig — alleen voor nieuwe klant)
 $current = az keyvault secret show --vault-name cms-mcp-kv-prod --name admcms-allowlist --query value -o tsv | ConvertFrom-Json
 $current.groups = @($current.groups) + "<NEW_GROUP_OID>"
 $updated = $current | ConvertTo-Json -Compress
@@ -76,6 +98,16 @@ az keyvault secret set --vault-name cms-mcp-kv-prod --name admcms-allowlist --va
 $rev = az containerapp revision list -n cms-mcp-app-prod -g CMS-MCP-rg-prod --query "[?properties.active].name | [0]" -o tsv
 az containerapp revision restart -n cms-mcp-app-prod -g CMS-MCP-rg-prod --revision $rev
 ```
+
+## Diagnostics — health_check MCP tool
+
+Naast `/healthz` (HTTP) is er een MCP-tool `health_check` aanroepbaar vanuit
+Claude/Copilot/Cursor:
+
+> *"Roep de admcms health_check tool aan."*
+
+Returnt server-status + database latency + caller-identity. Handig voor
+gebruikers om te verifiëren dat alles werkt voor ze een echte vraag stellen.
 
 ## Tenant toevoegen aan `ENTRA_ALLOWED_TENANTS`
 

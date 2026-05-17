@@ -15,15 +15,19 @@ Twee manieren om te testen: **lokaal** (snelle iteratie, geen Azure nodig) of
 
 ## Toegang krijgen (eenmalig)
 
-Jouw Campai-account moet op de allowlist staan in Key Vault. Vraag om je
-Entra OID toe te voegen aan secret `admcms-allowlist` in Key Vault `cms-mcp-kv-prod`.
+Toegang loopt via Entra security group. Vraag Roland of Janneke je toe te voegen
+aan **`SG-Campai-ADMCMS-Users`** in Campai Entra. Daarna direct toegang —
+geen restart, geen KV-touch.
 
-Je OID vind je met:
+Verifieer dat je toegang hebt:
 
 ```powershell
 az login
 az ad signed-in-user show --query id -o tsv
 ```
+
+Roep daarna de `health_check` tool aan vanuit Claude/Copilot, of doe een
+smoke test via curl (zie Optie 1 hieronder).
 
 ## Optie 1 — Snelle smoke test met curl
 
@@ -31,8 +35,12 @@ az ad signed-in-user show --query id -o tsv
 az login
 $token = az account get-access-token --resource api://1e6983d3-f996-4581-9518-e6819b79ac6a --query accessToken -o tsv
 
-# Lijst van alle tools (auth-check + tool registry)
-curl -H "Authorization: Bearer $token" https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/admin/tools | jq
+# Lijst van alle tools (auth-check + tool registry) — verwacht 21 tools
+curl.exe -H "Authorization: Bearer $token" https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/admin/tools | ConvertFrom-Json | Select-Object -ExpandProperty tools | Measure-Object | Select-Object Count
+
+# health_check tool via MCP — bewijst end-to-end (auth + MCP + DB-ping)
+$body = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"health_check","arguments":{}}}'
+curl.exe -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d $body https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp/
 
 # Een tool aanroepen via MCP protocol — schema van Customer-tabel
 $body = @{
@@ -180,13 +188,17 @@ GitHub Actions status: https://github.com/Github-campai/AzureMCP-CMS/actions
 
 ## Iets stuk?
 
+Eerste stap altijd: roep `health_check` aan (vanuit Claude of curl). Die vertelt
+direct of het server-side aan onze kant ligt (DB down, KV missing) of aan jouw
+kant (auth/allowlist).
+
 | Symptoom | Check |
 |---|---|
 | `/healthz` 503 | Container start nog op, wacht 30s. Check `az containerapp logs show ...` |
-| `/mcp` 401 met `Missing bearer token` | Auth werkt, je vergeet `Authorization` header |
+| `/mcp` 401 met `Missing bearer token` | Auth werkt, je vergeet `Authorization` header (of `curl` alias in PowerShell — gebruik `curl.exe`) |
 | `/mcp` 401 met `Wrong audience` | Token is voor andere resource, gebruik `--resource api://1e6983d3-...` |
-| `/mcp` 403 `Forbidden` | Jouw OID staat niet op de allowlist — vraag Janneke |
-| Tool call 500 met DB error | Check SQL firewall (`AllowAllWindowsAzureIps`), wachtwoord in KV |
+| `/mcp` 403 `Forbidden` | Je zit niet in `SG-Campai-ADMCMS-Users` — vraag Roland of Janneke |
+| `health_check` retourneert `"status":"down"` | DB connectie fout — check KV secrets `admcms-db-password` + `admcms-db-username` |
 | Tool call 200 maar lege resultaten | Tool werkt, query geeft 0 rijen — check parameters |
 
 Volledige troubleshooting + ops in [`docs/DEPLOYMENT.md`](DEPLOYMENT.md).
