@@ -251,16 +251,42 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
+def _public_base_url(request: Request) -> str:
+    """Resolve our externally-visible base URL, honouring proxy headers.
+
+    Azure Container Apps terminates TLS at the ingress, so uvicorn sees
+    plain HTTP. Without trusting X-Forwarded-* the metadata response
+    would advertise http:// URLs, which OAuth clients reject in
+    redirect/audience checks.
+    """
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.url.netloc
+    return f"{scheme}://{host}"
+
+
 async def oauth_protected_resource(request: Request) -> JSONResponse:
-    base_url = f"{request.url.scheme}://{request.url.netloc}"
-    return JSONResponse(
-        {
-            "resource": base_url,
-            "authorization_servers": ["https://login.microsoftonline.com/common/v2.0"],
-            "scopes_supported": ["admcms.read"],
-            "bearer_methods_supported": ["header"],
-        }
-    )
+    settings = get_settings()
+    base_url = _public_base_url(request)
+    # Advertise one authorization server per allowed tenant, plus the generic
+    # /common endpoint as a fallback. Dynamic-discovery MCP clients
+    # (Copilot Studio preview) pick the matching tenant for the signed-in user.
+    auth_servers = [
+        f"https://login.microsoftonline.com/{tid}/v2.0"
+        for tid in settings.entra_allowed_tenants
+        if tid
+    ]
+    auth_servers.append("https://login.microsoftonline.com/common/v2.0")
+
+    body = {
+        "resource": base_url,
+        "resource_name": "ADMCMS MCP",
+        "resource_documentation": "https://github.com/Github-campai/AzureMCP-CMS",
+        "authorization_servers": auth_servers,
+        "scopes_supported": [f"api://{settings.entra_app_id}/admcms.read"],
+        "bearer_methods_supported": ["header"],
+        "resource_signing_alg_values_supported": ["RS256"],
+    }
+    return JSONResponse(body)
 
 
 def _audited(tool_name: str, args: dict, call):
