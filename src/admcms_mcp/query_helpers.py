@@ -4,6 +4,7 @@ Kept tiny and composition-friendly so each tool in tools.py can reuse
 without pulling in business logic.
 """
 
+import calendar
 import re
 from datetime import date
 from typing import Any
@@ -114,3 +115,26 @@ def paging_summary(offset: int, limit: int, returned: int) -> dict[str, Any]:
         "has_more": has_more,
         "next_offset": (safe_offset + returned) if has_more else None,
     }
+
+
+def subtract_months(iso: str, months: int) -> str:
+    """Subtract N months from an ISO date, clamping the day to the target month's length.
+
+    >>> subtract_months("2026-05-18", 1)
+    '2026-04-18'
+    >>> subtract_months("2026-03-31", 1)
+    '2026-02-28'
+
+    Raises ValueError for any input that is not exactly YYYY-MM-DD.
+    """
+    d = date.fromisoformat(iso)
+    month = d.month - int(months)
+    year = d.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    while month > 12:
+        month -= 12
+        year += 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day).isoformat()

@@ -8,6 +8,7 @@ from admcms_mcp.query_helpers import (
     paging_summary,
     sanitize_like,
     shift_year,
+    subtract_months,
 )
 
 
@@ -146,3 +147,26 @@ class TestShiftYear:
 
     def test_non_leap_day_unaffected(self):
         assert shift_year("2024-02-28", -1) == "2023-02-28"
+
+
+class TestSubtractMonths:
+    def test_simple_month_subtraction(self):
+        assert subtract_months("2026-05-18", 1) == "2026-04-18"
+
+    def test_crosses_year_boundary(self):
+        assert subtract_months("2026-02-18", 3) == "2025-11-18"
+
+    def test_handles_end_of_month_when_target_is_shorter(self):
+        # March 31 minus 1 month → Feb 28 (not Feb 31)
+        assert subtract_months("2026-03-31", 1) == "2026-02-28"
+
+    def test_handles_leap_year(self):
+        # Feb 29 2024 minus 12 months → Feb 28 2023
+        assert subtract_months("2024-02-29", 12) == "2023-02-28"
+
+    def test_zero_months_returns_same_date(self):
+        assert subtract_months("2026-05-18", 0) == "2026-05-18"
+
+    def test_raises_on_invalid_iso(self):
+        with pytest.raises(ValueError):
+            subtract_months("not-a-date", 1)
