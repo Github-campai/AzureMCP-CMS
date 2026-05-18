@@ -41,18 +41,6 @@ def _convert_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: _jsonable(v) for k, v in row.items()} for row in rows]
 
 
-def _shape_dead_stock_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Rename LastSaleDate → last_sale_date and compute months_since_sale."""
-    out = dict(row)
-    last = out.pop("LastSaleDate", None)
-    days = out.get("days_since_sale")
-    out["last_sale_date"] = last
-    out["months_since_sale"] = (
-        round(float(days) / 30.44, 1) if days is not None else None
-    )
-    return out
-
-
 def query_database(sql: str, max_rows: int = 100) -> dict[str, Any]:
     """Execute a read-only SQL query against ADMCMS and return rows."""
     try:
@@ -1996,6 +1984,18 @@ _DEAD_STOCK_MIN_MONTHS = 1
 _DEAD_STOCK_MAX_MONTHS = 60
 
 
+def _shape_dead_stock_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Rename LastSaleDate → last_sale_date and compute months_since_sale."""
+    out = dict(row)
+    last = out.pop("LastSaleDate", None)
+    days = out.get("days_since_sale")
+    out["last_sale_date"] = last
+    out["months_since_sale"] = (
+        round(float(days) / 30.44, 1) if days is not None else None
+    )
+    return out
+
+
 def _dead_stock_ctes(include_inactive_warehouses: bool) -> tuple[str, list[str]]:
     """Build the shared CTE block + the warehouse-filter params placeholder.
 
@@ -2003,11 +2003,11 @@ def _dead_stock_ctes(include_inactive_warehouses: bool) -> tuple[str, list[str]]
     placeholders are bound by the outer query (min_stock_value first, then
     the warehouse-include flag).
     """
-    warehouse_clause = (
-        ""
-        if include_inactive_warehouses
-        else " AND pw.Warehouse NOT IN ('OS','SA','DM')"
-    )
+    if include_inactive_warehouses:
+        warehouse_clause = ""
+    else:
+        codes = ", ".join(f"'{w}'" for w in _DEAD_STOCK_INACTIVE_WAREHOUSES)
+        warehouse_clause = f" AND pw.Warehouse NOT IN ({codes})"
     cte_sql = (
         "WITH last_sale AS ("
         "  SELECT sil.Productcode, MAX(si.InvoiceDate) AS LastSaleDate "
