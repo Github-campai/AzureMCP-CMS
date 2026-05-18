@@ -29,6 +29,7 @@ from admcms_mcp.schema import SCHEMA_KNOWLEDGE
 from admcms_mcp.tools import detect_price_anomalies as _detect_price_anomalies
 from admcms_mcp.tools import get_credit_note_analysis as _get_credit_note_analysis
 from admcms_mcp.tools import get_customer_orders as _get_customer_orders
+from admcms_mcp.tools import get_dead_stock as _get_dead_stock
 from admcms_mcp.tools import get_discount_analysis as _get_discount_analysis
 from admcms_mcp.tools import get_kpi_summary as _get_kpi_summary
 from admcms_mcp.tools import get_lookups as _get_lookups
@@ -877,6 +878,69 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
+    def get_dead_stock(
+        months_without_sale: int = 12,
+        min_stock_value: float = 100.0,
+        group_by: str = "product",
+        include_inactive_warehouses: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """Surface products with stock that have not sold in the last N months.
+
+        Returns the SKUs (or makes/productgroups) that are tying up capital in
+        non-moving inventory. Use this when a customer asks "what's stuck on
+        the shelves?" or for periodic dead-stock reviews.
+
+        Definition of "dead":
+          - ProductWarehouse.ActualStock > 0
+          - ProductWarehouse.ActualStockValue >= min_stock_value (default 100)
+          - No invoice line (InvoiceType='0') in the last `months_without_sale`
+            months (default 12).
+
+        Never-sold products (no row at all in SalesinvoiceLines) are excluded
+        from the main `data` list but tracked separately in
+        `summary.never_sold_count` and `summary.never_sold_value` so they
+        aren't lost.
+
+        By default warehouses 'OS' (Overstock), 'SA' (Samples), and 'DM'
+        (Damaged) are excluded — set `include_inactive_warehouses=True` to
+        include them.
+
+        Args:
+            months_without_sale: months threshold, clamped 1-60. Default 12.
+            min_stock_value: home-currency floor on ActualStockValue,
+                clamped to >= 0. Default 100.0.
+            group_by: "product" (default, per-SKU per-warehouse rows),
+                "make", or "productgroup".
+            include_inactive_warehouses: include OS/SA/DM. Default False.
+            limit: rows per page, clamped 1-500, default 100.
+            offset: row to start from, default 0.
+
+        Returns: {data, summary: {total_dead_stock_value, total_dead_sku_count,
+                  never_sold_count, never_sold_value, cutoff_date, ...}, error}.
+        """
+        return _audited(
+            "get_dead_stock",
+            {
+                "months_without_sale": months_without_sale,
+                "min_stock_value": min_stock_value,
+                "group_by": group_by,
+                "include_inactive_warehouses": include_inactive_warehouses,
+                "limit": limit,
+                "offset": offset,
+            },
+            lambda: _get_dead_stock(
+                months_without_sale=months_without_sale,
+                min_stock_value=min_stock_value,
+                group_by=group_by,
+                include_inactive_warehouses=include_inactive_warehouses,
+                limit=limit,
+                offset=offset,
+            ),
+        )
+
+    @mcp.tool()
     def health_check() -> dict:
         """Diagnostic ping: server up, DB reachable, who-am-I, tool count.
 
@@ -896,7 +960,7 @@ def _build_mcp_server() -> FastMCP:
             "server": {
                 "name": "admcms-mcp",
                 "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "tool_count": 21,
+                "tool_count": 22,
             },
             "database": {"status": "ok", "latency_ms": None, "error": None},
             "caller": {"upn": None, "oid": None, "tid": None},
