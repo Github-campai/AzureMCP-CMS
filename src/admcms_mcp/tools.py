@@ -1996,12 +1996,14 @@ def _shape_dead_stock_row(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _dead_stock_ctes(include_inactive_warehouses: bool) -> tuple[str, list[str]]:
-    """Build the shared CTE block + the warehouse-filter params placeholder.
+def _dead_stock_ctes(include_inactive_warehouses: bool) -> str:
+    """Build the shared CTE block (last_sale + stock) for dead-stock queries.
 
-    Returns (cte_sql, []) — no params from the CTE itself; the stock CTE's
-    placeholders are bound by the outer query (min_stock_value first, then
-    the warehouse-include flag).
+    The block contains exactly one '?' placeholder: `ActualStockValue >= ?`
+    (bound to min_stock_value by the outer query). The warehouse filter is
+    interpolated as a literal clause from `_DEAD_STOCK_INACTIVE_WAREHOUSES`,
+    not via a parameter — safe because the codes come from a module constant,
+    never from user input.
     """
     if include_inactive_warehouses:
         warehouse_clause = ""
@@ -2026,11 +2028,11 @@ def _dead_stock_ctes(include_inactive_warehouses: bool) -> tuple[str, list[str]]
         f"   {warehouse_clause}"
         ") "
     )
-    return cte_sql, []
+    return cte_sql
 
 
 def _dead_stock_summary_sql(include_inactive_warehouses: bool) -> str:
-    cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
+    cte_sql = _dead_stock_ctes(include_inactive_warehouses)
     return (
         cte_sql
         + "SELECT "
@@ -2048,7 +2050,7 @@ def _dead_stock_summary_sql(include_inactive_warehouses: bool) -> str:
 
 
 def _dead_stock_main_sql_per_product(include_inactive_warehouses: bool) -> str:
-    cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
+    cte_sql = _dead_stock_ctes(include_inactive_warehouses)
     return (
         cte_sql
         + "SELECT s.Productcode, p.Description, p.Make, p.Productgroup, "
@@ -2079,7 +2081,7 @@ def _dead_stock_main_sql_aggregated(
     user input.
     """
     group_column = _DEAD_STOCK_GROUP_COLUMN[group_by]
-    cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
+    cte_sql = _dead_stock_ctes(include_inactive_warehouses)
     return (
         cte_sql
         + f"SELECT {group_column}, "
