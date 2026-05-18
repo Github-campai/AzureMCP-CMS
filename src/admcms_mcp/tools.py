@@ -41,6 +41,18 @@ def _convert_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{k: _jsonable(v) for k, v in row.items()} for row in rows]
 
 
+def _shape_dead_stock_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Rename LastSaleDate → last_sale_date and compute months_since_sale."""
+    out = dict(row)
+    last = out.pop("LastSaleDate", None)
+    days = out.get("days_since_sale")
+    out["last_sale_date"] = last
+    out["months_since_sale"] = (
+        round(float(days) / 30.44, 1) if days is not None else None
+    )
+    return out
+
+
 def query_database(sql: str, max_rows: int = 100) -> dict[str, Any]:
     """Execute a read-only SQL query against ADMCMS and return rows."""
     try:
@@ -1984,6 +1996,73 @@ _DEAD_STOCK_MIN_MONTHS = 1
 _DEAD_STOCK_MAX_MONTHS = 60
 
 
+def _dead_stock_ctes(include_inactive_warehouses: bool) -> tuple[str, list[str]]:
+    """Build the shared CTE block + the warehouse-filter params placeholder.
+
+    Returns (cte_sql, []) — no params from the CTE itself; the stock CTE's
+    placeholders are bound by the outer query (min_stock_value first, then
+    the warehouse-include flag).
+    """
+    warehouse_clause = (
+        ""
+        if include_inactive_warehouses
+        else " AND pw.Warehouse NOT IN ('OS','SA','DM')"
+    )
+    cte_sql = (
+        "WITH last_sale AS ("
+        "  SELECT sil.Productcode, MAX(si.InvoiceDate) AS LastSaleDate "
+        "  FROM SalesinvoiceLines sil "
+        "  JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
+        "  WHERE si.InvoiceType = '0' "
+        "  GROUP BY sil.Productcode"
+        "), "
+        "stock AS ("
+        "  SELECT pw.Productcode, pw.Warehouse, pw.ActualStock, "
+        "         pw.ActualStockValue, pw.CostPrice "
+        "  FROM ProductWarehouse pw "
+        "  WHERE pw.Active = 1 "
+        "    AND pw.ActualStock > 0 "
+        "    AND pw.ActualStockValue >= ?"
+        f"   {warehouse_clause}"
+        ") "
+    )
+    return cte_sql, []
+
+
+def _dead_stock_summary_sql(include_inactive_warehouses: bool) -> str:
+    cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
+    return (
+        cte_sql
+        + "SELECT "
+        "  SUM(CASE WHEN ls.LastSaleDate < ? THEN s.ActualStockValue ELSE 0 END) "
+        "    AS total_dead_value, "
+        "  COUNT(DISTINCT CASE WHEN ls.LastSaleDate < ? THEN s.Productcode END) "
+        "    AS total_dead_count, "
+        "  SUM(CASE WHEN ls.LastSaleDate IS NULL THEN s.ActualStockValue ELSE 0 END) "
+        "    AS never_sold_value, "
+        "  COUNT(DISTINCT CASE WHEN ls.LastSaleDate IS NULL THEN s.Productcode END) "
+        "    AS never_sold_count "
+        "FROM stock s "
+        "LEFT JOIN last_sale ls ON ls.Productcode = s.Productcode"
+    )
+
+
+def _dead_stock_main_sql_per_product(include_inactive_warehouses: bool) -> str:
+    cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
+    return (
+        cte_sql
+        + "SELECT s.Productcode, p.Description, p.Make, p.Productgroup, "
+        "       s.Warehouse, s.ActualStock, s.ActualStockValue, s.CostPrice, "
+        "       ls.LastSaleDate, "
+        "       DATEDIFF(day, ls.LastSaleDate, GETDATE()) AS days_since_sale "
+        "FROM stock s "
+        "JOIN Product p ON p.Productcode = s.Productcode "
+        "JOIN last_sale ls ON ls.Productcode = s.Productcode "
+        "WHERE ls.LastSaleDate < ? "
+        "ORDER BY s.ActualStockValue DESC"
+    )
+
+
 def get_dead_stock(
     months_without_sale: int = 12,
     min_stock_value: float = 100.0,
@@ -2014,14 +2093,27 @@ def get_dead_stock(
         today_iso = datetime.date.today().isoformat()
         cutoff_date = subtract_months(today_iso, effective_months)
 
-        # SQL execution wired up in Task 3.
-        rows: list[dict[str, Any]] = []
-        totals = {
-            "total_dead_value": 0.0,
-            "total_dead_count": 0,
-            "never_sold_value": 0.0,
-            "never_sold_count": 0,
+        summary_sql = _dead_stock_summary_sql(include_inactive_warehouses)
+        # Params: min_stock_value (stock CTE), cutoff (×2 in CASE WHEN)
+        summary_params = (effective_min_value, cutoff_date, cutoff_date)
+        totals_rows = execute_query_params(summary_sql, summary_params, max_rows=1)
+        totals = totals_rows[0] if totals_rows else {
+            "total_dead_value": 0, "total_dead_count": 0,
+            "never_sold_value": 0, "never_sold_count": 0,
         }
+
+        if group_by == "product":
+            main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
+        else:
+            # Wired up in Task 4.
+            main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
+
+        page_sql, page_params = paging_clause(effective_offset, effective_limit)
+        main_sql = main_sql_base + page_sql
+        # Params: min_stock_value, cutoff, offset, limit
+        main_params = (effective_min_value, cutoff_date, *page_params)
+        raw_rows = execute_query_params(main_sql, main_params, max_rows=effective_limit)
+        rows = _convert_rows([_shape_dead_stock_row(r) for r in raw_rows])
 
         summary = {
             "count": len(rows),

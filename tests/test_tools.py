@@ -1171,3 +1171,94 @@ class TestGetDeadStockValidation:
                                         "never_sold_value": 0, "never_sold_count": 0}], []]
         result = get_dead_stock(min_stock_value=-50.0)
         assert result["summary"]["min_stock_value"] == 0.0
+
+
+class TestGetDeadStockPerProduct:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_returns_dead_products_with_expected_shape(self, mock_execute):
+        # Two calls: 1) summary query, 2) paged data query
+        mock_execute.side_effect = [
+            [{"total_dead_value": 5000.0, "total_dead_count": 12,
+              "never_sold_value": 250.0, "never_sold_count": 3}],
+            [{
+                "Productcode": "MAH-001",
+                "Description": "Oil filter",
+                "Make": "MAHLE",
+                "Productgroup": "HOD",
+                "Warehouse": "CM",
+                "ActualStock": 47,
+                "ActualStockValue": 1245.30,
+                "CostPrice": 26.50,
+                "LastSaleDate": "2024-02-14",
+                "days_since_sale": 824,
+            }],
+        ]
+        result = get_dead_stock(months_without_sale=12, min_stock_value=100.0)
+        assert result["error"] is None
+        assert len(result["data"]) == 1
+        row = result["data"][0]
+        assert row["Productcode"] == "MAH-001"
+        assert row["last_sale_date"] == "2024-02-14"
+        assert row["days_since_sale"] == 824
+        assert row["months_since_sale"] == 27.1
+        assert result["summary"]["total_dead_stock_value"] == 5000.0
+        assert result["summary"]["total_dead_sku_count"] == 12
+        assert result["summary"]["never_sold_count"] == 3
+        assert result["summary"]["never_sold_value"] == 250.0
+        assert result["summary"]["count"] == 1
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_default_excludes_inactive_warehouses(self, mock_execute):
+        mock_execute.side_effect = [
+            [{"total_dead_value": 0, "total_dead_count": 0,
+              "never_sold_value": 0, "never_sold_count": 0}],
+            [],
+        ]
+        get_dead_stock()
+        # Second call (the paged data SQL) should contain the warehouse filter
+        paged_sql = mock_execute.call_args_list[1][0][0]
+        assert "Warehouse NOT IN" in paged_sql
+        assert "'OS'" in paged_sql and "'SA'" in paged_sql and "'DM'" in paged_sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_include_inactive_warehouses_omits_filter(self, mock_execute):
+        mock_execute.side_effect = [
+            [{"total_dead_value": 0, "total_dead_count": 0,
+              "never_sold_value": 0, "never_sold_count": 0}],
+            [],
+        ]
+        get_dead_stock(include_inactive_warehouses=True)
+        paged_sql = mock_execute.call_args_list[1][0][0]
+        assert "Warehouse NOT IN" not in paged_sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_paging_summary_reflects_full_page(self, mock_execute):
+        mock_execute.side_effect = [
+            [{"total_dead_value": 0, "total_dead_count": 0,
+              "never_sold_value": 0, "never_sold_count": 0}],
+            [{"Productcode": f"P{i}", "Description": "x", "Make": "x",
+              "Productgroup": "x", "Warehouse": "CM", "ActualStock": 1,
+              "ActualStockValue": 1.0, "CostPrice": 1.0,
+              "LastSaleDate": "2024-01-01", "days_since_sale": 800}
+             for i in range(5)],
+        ]
+        result = get_dead_stock(limit=5)
+        assert result["summary"]["has_more"] is True
+        assert result["summary"]["next_offset"] == 5
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_cutoff_date_is_today_minus_months(self, mock_execute):
+        import datetime as _dt
+        from admcms_mcp.query_helpers import subtract_months
+        mock_execute.side_effect = [
+            [{"total_dead_value": 0, "total_dead_count": 0,
+              "never_sold_value": 0, "never_sold_count": 0}],
+            [],
+        ]
+        result = get_dead_stock(months_without_sale=6)
+        expected_cutoff = subtract_months(_dt.date.today().isoformat(), 6)
+        assert result["summary"]["cutoff_date"] == expected_cutoff
+        # And the same value should have been sent to SQL as a param
+        # The cutoff_date param is shared across both queries; pick either call.
+        paged_params = mock_execute.call_args_list[1][0][1]
+        assert expected_cutoff in paged_params
