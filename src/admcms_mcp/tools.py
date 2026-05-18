@@ -22,6 +22,7 @@ from admcms_mcp.query_helpers import (
     paging_summary,
     sanitize_like,
     shift_year,
+    subtract_months,
 )
 
 logger = logging.getLogger(__name__)
@@ -1974,4 +1975,71 @@ def get_order_origin_mix(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_order_origin_mix failed")
+        return format_response(data=[], error=f"Execution error: {e}")
+
+
+_DEAD_STOCK_GROUP_BY = ("product", "make", "productgroup")
+_DEAD_STOCK_INACTIVE_WAREHOUSES = ("OS", "SA", "DM")
+_DEAD_STOCK_MIN_MONTHS = 1
+_DEAD_STOCK_MAX_MONTHS = 60
+
+
+def get_dead_stock(
+    months_without_sale: int = 12,
+    min_stock_value: float = 100.0,
+    group_by: str = "product",
+    include_inactive_warehouses: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Surface products with stock that have not sold in the last N months."""
+    if group_by not in _DEAD_STOCK_GROUP_BY:
+        return format_response(
+            data=[],
+            error=(
+                f"Invalid group_by: {group_by!r}; "
+                f"must be one of {list(_DEAD_STOCK_GROUP_BY)}"
+            ),
+        )
+
+    try:
+        effective_months = max(
+            _DEAD_STOCK_MIN_MONTHS,
+            min(int(months_without_sale), _DEAD_STOCK_MAX_MONTHS),
+        )
+        effective_min_value = max(0.0, float(min_stock_value))
+        effective_limit = max(1, min(int(limit), _MAX_LIMIT))
+        effective_offset = max(0, int(offset))
+
+        today_iso = datetime.date.today().isoformat()
+        cutoff_date = subtract_months(today_iso, effective_months)
+
+        # SQL execution wired up in Task 3.
+        rows: list[dict[str, Any]] = []
+        totals = {
+            "total_dead_value": 0.0,
+            "total_dead_count": 0,
+            "never_sold_value": 0.0,
+            "never_sold_count": 0,
+        }
+
+        summary = {
+            "count": len(rows),
+            "total_dead_stock_value": float(totals["total_dead_value"] or 0),
+            "total_dead_sku_count": int(totals["total_dead_count"] or 0),
+            "never_sold_count": int(totals["never_sold_count"] or 0),
+            "never_sold_value": float(totals["never_sold_value"] or 0),
+            "months_without_sale": effective_months,
+            "min_stock_value": effective_min_value,
+            "group_by": group_by,
+            "include_inactive_warehouses": include_inactive_warehouses,
+            "cutoff_date": cutoff_date,
+            **paging_summary(effective_offset, effective_limit, len(rows)),
+        }
+        return format_response(data=rows, summary=summary)
+    except ValueError as e:
+        logger.info("get_dead_stock rejected: %s", e)
+        return format_response(data=[], error=str(e))
+    except Exception as e:
+        logger.exception("get_dead_stock failed")
         return format_response(data=[], error=f"Execution error: {e}")

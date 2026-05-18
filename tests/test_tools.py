@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from admcms_mcp.tools import get_lookups, get_schema, query_database
+from admcms_mcp.tools import get_dead_stock, get_lookups, get_schema, query_database
 
 
 class TestQueryDatabase:
@@ -1142,3 +1142,32 @@ class TestGetOrderOriginMix:
         assert row["line_count_ly"] == 800
         assert row["delta_line_count"] == 200
         assert row["delta_pct"] == 25.0
+
+
+class TestGetDeadStockValidation:
+    def test_invalid_group_by_returns_error_response(self):
+        result = get_dead_stock(group_by="bogus")
+        assert result["data"] == []
+        assert result["error"] is not None
+        assert "group_by" in result["error"]
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_clamps_months_without_sale_high(self, mock_execute):
+        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
+                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        result = get_dead_stock(months_without_sale=999)
+        assert result["summary"]["months_without_sale"] == 60
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_clamps_months_without_sale_low(self, mock_execute):
+        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
+                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        result = get_dead_stock(months_without_sale=0)
+        assert result["summary"]["months_without_sale"] == 1
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_clamps_negative_min_stock_value(self, mock_execute):
+        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
+                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        result = get_dead_stock(min_stock_value=-50.0)
+        assert result["summary"]["min_stock_value"] == 0.0
