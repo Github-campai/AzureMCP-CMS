@@ -1307,3 +1307,13 @@ class TestGetDeadStockAggregated:
         paged_sql = mock_execute.call_args_list[1][0][0]
         assert "GROUP BY p.Productgroup" in paged_sql
         assert "p.Make" not in paged_sql
+
+
+class TestGetDeadStockErrorHandling:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_db_exception_returns_error_response(self, mock_execute):
+        mock_execute.side_effect = Exception("DB down")
+        result = get_dead_stock()
+        assert result["data"] == []
+        assert result["error"] is not None
+        assert "DB down" in result["error"]
