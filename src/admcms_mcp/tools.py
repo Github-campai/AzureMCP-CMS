@@ -2063,6 +2063,49 @@ def _dead_stock_main_sql_per_product(include_inactive_warehouses: bool) -> str:
     )
 
 
+_DEAD_STOCK_GROUP_COLUMN = {
+    "make": "p.Make",
+    "productgroup": "p.Productgroup",
+}
+
+
+def _dead_stock_main_sql_aggregated(
+    group_by: str, include_inactive_warehouses: bool
+) -> str:
+    """SQL for group_by='make' or 'productgroup'.
+
+    `group_by` MUST already be validated against _DEAD_STOCK_GROUP_COLUMN —
+    we look up the column name from a static dict, never interpolate raw
+    user input.
+    """
+    group_column = _DEAD_STOCK_GROUP_COLUMN[group_by]
+    cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
+    return (
+        cte_sql
+        + f"SELECT {group_column}, "
+        "       COUNT(DISTINCT s.Productcode) AS dead_sku_count, "
+        "       SUM(s.ActualStockValue) AS total_stock_value, "
+        "       AVG(CAST(DATEDIFF(day, ls.LastSaleDate, GETDATE()) AS FLOAT) / 30.44) "
+        "         AS avg_months_since_sale, "
+        "       MIN(ls.LastSaleDate) AS oldest_last_sale "
+        "FROM stock s "
+        "JOIN Product p ON p.Productcode = s.Productcode "
+        "JOIN last_sale ls ON ls.Productcode = s.Productcode "
+        "WHERE ls.LastSaleDate < ? "
+        f"GROUP BY {group_column} "
+        "ORDER BY total_stock_value DESC"
+    )
+
+
+def _shape_dead_stock_aggregated_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Aggregated rows already have the right keys; just round avg_months."""
+    out = dict(row)
+    avg = out.get("avg_months_since_sale")
+    if avg is not None:
+        out["avg_months_since_sale"] = round(float(avg), 1)
+    return out
+
+
 def get_dead_stock(
     months_without_sale: int = 12,
     min_stock_value: float = 100.0,
@@ -2104,16 +2147,19 @@ def get_dead_stock(
 
         if group_by == "product":
             main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
+            shape_fn = _shape_dead_stock_row
         else:
-            # Wired up in Task 4.
-            main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
+            main_sql_base = _dead_stock_main_sql_aggregated(
+                group_by, include_inactive_warehouses
+            )
+            shape_fn = _shape_dead_stock_aggregated_row
 
         page_sql, page_params = paging_clause(effective_offset, effective_limit)
         main_sql = main_sql_base + page_sql
         # Params: min_stock_value, cutoff, offset, limit
         main_params = (effective_min_value, cutoff_date, *page_params)
         raw_rows = execute_query_params(main_sql, main_params, max_rows=effective_limit)
-        rows = _convert_rows([_shape_dead_stock_row(r) for r in raw_rows])
+        rows = _convert_rows([shape_fn(r) for r in raw_rows])
 
         summary = {
             "count": len(rows),

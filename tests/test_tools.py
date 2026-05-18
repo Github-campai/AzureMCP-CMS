@@ -1262,3 +1262,48 @@ class TestGetDeadStockPerProduct:
         # The cutoff_date param is shared across both queries; pick either call.
         paged_params = mock_execute.call_args_list[1][0][1]
         assert expected_cutoff in paged_params
+
+
+class TestGetDeadStockAggregated:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_group_by_make_returns_aggregated_shape(self, mock_execute):
+        mock_execute.side_effect = [
+            [{"total_dead_value": 100000.0, "total_dead_count": 250,
+              "never_sold_value": 5000.0, "never_sold_count": 20}],
+            [
+                {"Make": "MAHLE", "dead_sku_count": 38,
+                 "total_stock_value": 24510.0, "avg_months_since_sale": 19.4,
+                 "oldest_last_sale": "2022-08-03"},
+                {"Make": "BOSCH", "dead_sku_count": 22,
+                 "total_stock_value": 14200.0, "avg_months_since_sale": 14.1,
+                 "oldest_last_sale": "2023-01-15"},
+            ],
+        ]
+        result = get_dead_stock(group_by="make")
+        assert result["error"] is None
+        assert len(result["data"]) == 2
+        row = result["data"][0]
+        assert row["Make"] == "MAHLE"
+        assert row["dead_sku_count"] == 38
+        assert row["total_stock_value"] == 24510.0
+        # No per-SKU fields in aggregated mode
+        assert "Productcode" not in row
+        assert "Warehouse" not in row
+        # Summary still has the per-product totals
+        assert result["summary"]["total_dead_sku_count"] == 250
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_group_by_productgroup_uses_productgroup_column(self, mock_execute):
+        mock_execute.side_effect = [
+            [{"total_dead_value": 0, "total_dead_count": 0,
+              "never_sold_value": 0, "never_sold_count": 0}],
+            [{"Productgroup": "HOD", "dead_sku_count": 10,
+              "total_stock_value": 500.0, "avg_months_since_sale": 16.0,
+              "oldest_last_sale": "2023-05-01"}],
+        ]
+        result = get_dead_stock(group_by="productgroup")
+        assert result["data"][0]["Productgroup"] == "HOD"
+        # And the SQL should GROUP BY p.Productgroup, not p.Make
+        paged_sql = mock_execute.call_args_list[1][0][0]
+        assert "GROUP BY p.Productgroup" in paged_sql
+        assert "p.Make" not in paged_sql
