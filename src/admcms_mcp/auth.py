@@ -100,16 +100,19 @@ def validate_jwt(token: str) -> dict[str, Any]:
         raise InvalidToken(f"Issuer does not match tenant: {iss}")
 
     # Authorization: accept the delegated scope `admcms.read` (scp claim — user/OBO
-    # tokens) OR the `admcms.read` app role (roles claim — service-principal /
-    # client-credentials tokens). `or ""`/`or []` so explicit nulls don't crash.
+    # tokens) OR the `admcms.invoke` app role (roles claim — service-principal /
+    # client-credentials tokens). The app-role value must differ from the delegated
+    # scope value (Entra forbids duplicate values across scopes and app roles).
+    # `or ""`/`or []` so explicit nulls don't crash.
     scp = claims.get("scp") or ""
     scopes = scp.split() if isinstance(scp, str) else scp
     roles = claims.get("roles") or []
     if not isinstance(roles, list):
         roles = [roles]
-    if "admcms.read" not in scopes and "admcms.read" not in roles:
+    if "admcms.read" not in scopes and "admcms.invoke" not in roles:
         raise InvalidToken(
-            f"Missing required scope/role admcms.read; got scopes={scopes} roles={roles}"
+            f"Missing required scope admcms.read / role admcms.invoke; "
+            f"got scopes={scopes} roles={roles}"
         )
 
     return claims

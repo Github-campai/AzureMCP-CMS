@@ -69,11 +69,11 @@ class TestValidateJwt:
             validate_jwt(token)
 
     def test_app_role_token_accepted(self, make_token, jwks_patch, settings_patch):
-        """Client-credentials token: no scp, admcms.read in roles → accepted."""
-        token = make_token(scp="", roles=["admcms.read"], oid="sp-oid-1")
+        """Client-credentials token: no scp, admcms.invoke in roles → accepted."""
+        token = make_token(scp="", roles=["admcms.invoke"], oid="sp-oid-1")
         claims = validate_jwt(token)
         assert claims["oid"] == "sp-oid-1"
-        assert claims["roles"] == ["admcms.read"]
+        assert claims["roles"] == ["admcms.invoke"]
 
     def test_app_token_without_role_rejected(self, make_token, jwks_patch, settings_patch):
         """Client-credentials token with no scp and no matching role → rejected."""
