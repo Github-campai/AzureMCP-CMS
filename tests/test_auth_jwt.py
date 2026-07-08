@@ -68,6 +68,19 @@ class TestValidateJwt:
         with pytest.raises(InvalidToken, match="scope"):
             validate_jwt(token)
 
+    def test_app_role_token_accepted(self, make_token, jwks_patch, settings_patch):
+        """Client-credentials token: no scp, admcms.read in roles → accepted."""
+        token = make_token(scp="", roles=["admcms.read"], oid="sp-oid-1")
+        claims = validate_jwt(token)
+        assert claims["oid"] == "sp-oid-1"
+        assert claims["roles"] == ["admcms.read"]
+
+    def test_app_token_without_role_rejected(self, make_token, jwks_patch, settings_patch):
+        """Client-credentials token with no scp and no matching role → rejected."""
+        token = make_token(scp="", roles=[])
+        with pytest.raises(InvalidToken, match="scope|role"):
+            validate_jwt(token)
+
     def test_malformed_token_rejected(self, jwks_patch, settings_patch):
         with pytest.raises(InvalidToken):
             validate_jwt("not.a.jwt")

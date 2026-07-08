@@ -34,6 +34,7 @@ def make_token(rsa_key):
         upn: str = "roland@campai.nl",
         groups: list[str] | None = None,
         scp: str = "admcms.read",
+        roles: list[str] | None = None,
         exp_offset: int = 3600,
     ) -> str:
         payload = {
@@ -48,6 +49,8 @@ def make_token(rsa_key):
         }
         if groups is not None:
             payload["groups"] = groups
+        if roles is not None:
+            payload["roles"] = roles
         header = {"alg": "RS256", "kid": rsa_key["kid"]}
         token = jwt.encode(header, payload, rsa_key["private_pem"])
         return token.decode() if isinstance(token, bytes) else token
