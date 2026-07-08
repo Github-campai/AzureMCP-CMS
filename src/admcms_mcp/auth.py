@@ -99,11 +99,18 @@ def validate_jwt(token: str) -> dict[str, Any]:
     if iss not in (expected_iss_v1, expected_iss_v2, expected_iss_v2_alt):
         raise InvalidToken(f"Issuer does not match tenant: {iss}")
 
-    # scp — use `or ""` so explicit null in payload becomes empty string
+    # Authorization: accept the delegated scope `admcms.read` (scp claim — user/OBO
+    # tokens) OR the `admcms.read` app role (roles claim — service-principal /
+    # client-credentials tokens). `or ""`/`or []` so explicit nulls don't crash.
     scp = claims.get("scp") or ""
     scopes = scp.split() if isinstance(scp, str) else scp
-    if "admcms.read" not in scopes:
-        raise InvalidToken(f"Missing required scope admcms.read; got: {scopes}")
+    roles = claims.get("roles") or []
+    if not isinstance(roles, list):
+        roles = [roles]
+    if "admcms.read" not in scopes and "admcms.read" not in roles:
+        raise InvalidToken(
+            f"Missing required scope/role admcms.read; got scopes={scopes} roles={roles}"
+        )
 
     return claims
 
