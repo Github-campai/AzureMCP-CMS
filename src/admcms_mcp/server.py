@@ -31,6 +31,7 @@ from admcms_mcp.tools import get_credit_note_analysis as _get_credit_note_analys
 from admcms_mcp.tools import get_customer_orders as _get_customer_orders
 from admcms_mcp.tools import get_dead_stock as _get_dead_stock
 from admcms_mcp.tools import get_discount_analysis as _get_discount_analysis
+from admcms_mcp.tools import get_filter_options as _get_filter_options
 from admcms_mcp.tools import get_kpi_summary as _get_kpi_summary
 from admcms_mcp.tools import get_lookups as _get_lookups
 from admcms_mcp.tools import get_margin_report as _get_margin_report
@@ -407,6 +408,7 @@ def _build_mcp_server() -> FastMCP:
         end_date: str,
         group_by: str = "total",
         include_ly: bool = False,
+        filters: dict | None = None,
     ) -> dict:
         """Aggregate sales invoice revenue between two ISO dates.
 
@@ -420,13 +422,27 @@ def _build_mcp_server() -> FastMCP:
                 "country" (Salesinvoice.DeliveryCountry), "productgroup".
             include_ly: when True, compute same period 1 year earlier and add
                 amount_ly + delta + delta_pct to each row. Default False.
+            filters: optional dict restricting results to specific dimension
+                values, e.g. {"country": ["NL"], "business_unit": ["B2B"]}.
+                Supported keys: country (all group_by), customer_group /
+                business_unit (all group_by), make / productgroup (only when
+                group_by itself is "make"/"productgroup"). Use get_filter_options
+                to discover valid values. Omit for unchanged (unfiltered) behaviour.
 
         Returns: {data, summary: {total_amount, [total_amount_ly], period, ...}, error}.
         """
         return _audited(
             "get_revenue",
-            {"start_date": start_date, "end_date": end_date, "group_by": group_by, "include_ly": include_ly},
-            lambda: _get_revenue(start_date, end_date, group_by=group_by, include_ly=include_ly),
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "group_by": group_by,
+                "include_ly": include_ly,
+                "filters": filters,
+            },
+            lambda: _get_revenue(
+                start_date, end_date, group_by=group_by, include_ly=include_ly, filters=filters
+            ),
         )
 
     @mcp.tool()
@@ -435,6 +451,7 @@ def _build_mcp_server() -> FastMCP:
         end_date: str,
         group_by: str = "total",
         include_ly: bool = False,
+        filters: dict | None = None,
     ) -> dict:
         """Gross-margin analysis on SalesinvoiceLines (turnover - cost).
 
@@ -449,18 +466,35 @@ def _build_mcp_server() -> FastMCP:
             group_by: "total" (default), "country", "make", "productgroup",
                 "customer", "segment" (B2C/B2B/IC/Overig via CustSuppGroup).
             include_ly: add turnover_ly, margin_ly, delta_margin per row.
+            filters: optional dict restricting results to specific dimension
+                values. Supported keys (any group_by): country, customer_group,
+                business_unit, make, productgroup. Use get_filter_options to
+                discover valid values. Omit for unchanged behaviour.
 
         Returns: {data: rows with turnover, cost, margin, margin_pct, ...,
                   summary: {turnover, margin, margin_pct, ...}, error}.
         """
         return _audited(
             "get_margin_report",
-            {"start_date": start_date, "end_date": end_date, "group_by": group_by, "include_ly": include_ly},
-            lambda: _get_margin_report(start_date, end_date, group_by=group_by, include_ly=include_ly),
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "group_by": group_by,
+                "include_ly": include_ly,
+                "filters": filters,
+            },
+            lambda: _get_margin_report(
+                start_date, end_date, group_by=group_by, include_ly=include_ly, filters=filters
+            ),
         )
 
     @mcp.tool()
-    def get_kpi_summary(start_date: str, end_date: str, include_ly: bool = True) -> dict:
+    def get_kpi_summary(
+        start_date: str,
+        end_date: str,
+        include_ly: bool = True,
+        filters: dict | None = None,
+    ) -> dict:
         """Top-level performance KPIs in a single call.
 
         Replicates the KPI-card row of a typical management dashboard:
@@ -476,14 +510,24 @@ def _build_mcp_server() -> FastMCP:
             start_date: ISO YYYY-MM-DD, inclusive.
             end_date: ISO YYYY-MM-DD, exclusive.
             include_ly: compute same period 1 year earlier + deltas. Default True.
+            filters: optional dict restricting results to specific dimension
+                values. Supported keys: country, customer_group, business_unit.
+                make/productgroup are not supported by this tool. Use
+                get_filter_options to discover valid values. Omit for
+                unchanged behaviour.
 
         Returns: {data: [single row with ~30 fields], summary: {same fields +
                   period + ly_period}, error}.
         """
         return _audited(
             "get_kpi_summary",
-            {"start_date": start_date, "end_date": end_date, "include_ly": include_ly},
-            lambda: _get_kpi_summary(start_date, end_date, include_ly=include_ly),
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "include_ly": include_ly,
+                "filters": filters,
+            },
+            lambda: _get_kpi_summary(start_date, end_date, include_ly=include_ly, filters=filters),
         )
 
     @mcp.tool()
@@ -512,7 +556,12 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_top_customers(start_date: str, end_date: str, limit: int = 10) -> dict:
+    def get_top_customers(
+        start_date: str,
+        end_date: str,
+        limit: int = 10,
+        filters: dict | None = None,
+    ) -> dict:
         """Return the top customers on invoice revenue between two ISO dates.
 
         Filters to real customers only (CustSuppType = '1'), excluding suppliers.
@@ -522,14 +571,19 @@ def _build_mcp_server() -> FastMCP:
             start_date: ISO YYYY-MM-DD, inclusive.
             end_date: ISO YYYY-MM-DD, exclusive.
             limit: max customers to return, clamped 1-500, default 10.
+            filters: optional dict restricting results to specific dimension
+                values. Supported keys: country, customer_group, business_unit.
+                make/productgroup are not supported by this tool. Use
+                get_filter_options to discover valid values. Omit for
+                unchanged behaviour.
 
         Returns: {data: [{CustSuppnr, Searchname, CustSuppGroup, invoice_count,
                   total_amount}, ...], summary: {top_total_amount, count, period}, error}.
         """
         return _audited(
             "get_top_customers",
-            {"start_date": start_date, "end_date": end_date, "limit": limit},
-            lambda: _get_top_customers(start_date, end_date, limit=limit),
+            {"start_date": start_date, "end_date": end_date, "limit": limit, "filters": filters},
+            lambda: _get_top_customers(start_date, end_date, limit=limit, filters=filters),
         )
 
     @mcp.tool()
@@ -840,7 +894,12 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_discount_analysis(start_date: str, end_date: str, group_by: str = "segment") -> dict:
+    def get_discount_analysis(
+        start_date: str,
+        end_date: str,
+        group_by: str = "segment",
+        filters: dict | None = None,
+    ) -> dict:
         """Discount analysis on SalesinvoiceLines (DiscountAmount > 0).
 
         Gross pre-discount = net_turnover + total_discount.
@@ -851,15 +910,32 @@ def _build_mcp_server() -> FastMCP:
             end_date: ISO YYYY-MM-DD, exclusive.
             group_by: "segment" (default), "customer", "make", "productgroup",
                 "salesrep", "total".
+            filters: optional dict restricting results to specific dimension
+                values. Supported keys: customer_group, business_unit, make,
+                productgroup. country is not supported by this tool. Use
+                get_filter_options to discover valid values. Omit for
+                unchanged behaviour.
         """
         return _audited(
             "get_discount_analysis",
-            {"start_date": start_date, "end_date": end_date, "group_by": group_by},
-            lambda: _get_discount_analysis(start_date, end_date, group_by=group_by),
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "group_by": group_by,
+                "filters": filters,
+            },
+            lambda: _get_discount_analysis(
+                start_date, end_date, group_by=group_by, filters=filters
+            ),
         )
 
     @mcp.tool()
-    def get_order_origin_mix(start_date: str, end_date: str, include_ly: bool = False) -> dict:
+    def get_order_origin_mix(
+        start_date: str,
+        end_date: str,
+        include_ly: bool = False,
+        filters: dict | None = None,
+    ) -> dict:
         """Order-channel mix via SalesinvoiceLines.OrderOrigin.
 
         Known dominant codes: '06' (web, ~88%), '12', '11', '01'.
@@ -870,12 +946,38 @@ def _build_mcp_server() -> FastMCP:
             start_date: ISO YYYY-MM-DD, inclusive.
             end_date: ISO YYYY-MM-DD, exclusive.
             include_ly: YoY delta per origin. Default False.
+            filters: optional dict restricting results to specific dimension
+                values. Supported keys: country, customer_group, business_unit.
+                make/productgroup are not supported by this tool. Use
+                get_filter_options to discover valid values. Omit for
+                unchanged behaviour.
         """
         return _audited(
             "get_order_origin_mix",
-            {"start_date": start_date, "end_date": end_date, "include_ly": include_ly},
-            lambda: _get_order_origin_mix(start_date, end_date, include_ly=include_ly),
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "include_ly": include_ly,
+                "filters": filters,
+            },
+            lambda: _get_order_origin_mix(
+                start_date, end_date, include_ly=include_ly, filters=filters
+            ),
         )
+
+    @mcp.tool()
+    def get_filter_options() -> dict:
+        """Return distinct values for each filter dimension (data-driven dropdowns).
+
+        Backs the `filters` arg on get_revenue, get_margin_report,
+        get_kpi_summary, get_top_customers, get_order_origin_mix, and
+        get_discount_analysis.
+
+        Returns: {customer_group: [top ~30 by frequency], business_unit:
+        ["B2C","B2B","IC"], country: [top ~50 by frequency], make: [top ~100
+        by frequency], productgroup: [top ~100 by frequency]}.
+        """
+        return _audited("get_filter_options", {}, lambda: _get_filter_options())
 
     @mcp.tool()
     def get_dead_stock(
@@ -960,7 +1062,7 @@ def _build_mcp_server() -> FastMCP:
             "server": {
                 "name": "admcms-mcp",
                 "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "tool_count": 22,
+                "tool_count": 23,
             },
             "database": {"status": "ok", "latency_ms": None, "error": None},
             "caller": {"upn": None, "oid": None, "tid": None},

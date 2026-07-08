@@ -44,6 +44,75 @@ def company_filter(company: str | None) -> tuple[str, tuple[str, ...]]:
     return " AND Company = ?", (company,)
 
 
+_SEGMENT_GROUPS = {
+    "B2C": ["ND"],
+    "B2B": ["G2", "G3", "G4", "G5", "G6"],
+    "IC": ["INTC"],
+}
+
+
+def build_filter_where(
+    filters: dict | None,
+    *,
+    cs: str | None = None,
+    p: str | None = None,
+    country_col: str | None = None,
+) -> tuple[str, tuple]:
+    """Build a SQL WHERE-clause fragment for optional dimensional filters.
+
+    `filters` may carry any of `customer_group`, `business_unit`, `country`,
+    `make`, `productgroup`. Each dim is only applied when its required
+    alias/column is provided by the caller (so a tool only advertises the
+    dims its query actually supports) and its value list is non-empty.
+    Unknown dims are silently skipped.
+
+    Returns `(sql_fragment, params)` where `sql_fragment` is either `""` or
+    a string starting with `" AND "` ready to append to an existing WHERE
+    clause, and `params` is a flat tuple of values in the same order as the
+    `?` placeholders across the fragment.
+    """
+    if not filters:
+        return "", ()
+
+    fragments: list[str] = []
+    params: list[Any] = []
+
+    for dim, values in filters.items():
+        if not values:
+            continue
+
+        column: str | None = None
+        codes: list[Any] = []
+
+        if dim == "customer_group" and cs:
+            column = f"{cs}.CustSuppGroup"
+            codes = list(values)
+        elif dim == "business_unit" and cs:
+            column = f"{cs}.CustSuppGroup"
+            for unit in values:
+                for code in _SEGMENT_GROUPS.get(unit, []):
+                    if code not in codes:
+                        codes.append(code)
+        elif dim == "country" and country_col:
+            column = country_col
+            codes = list(values)
+        elif dim == "make" and p:
+            column = f"{p}.Make"
+            codes = list(values)
+        elif dim == "productgroup" and p:
+            column = f"{p}.Productgroup"
+            codes = list(values)
+
+        if not column or not codes:
+            continue
+
+        placeholders = ",".join("?" * len(codes))
+        fragments.append(f" AND {column} IN ({placeholders})")
+        params.extend(codes)
+
+    return "".join(fragments), tuple(params)
+
+
 _LIKE_ESCAPE_MAP = str.maketrans(
     {
         "%": "[%]",
