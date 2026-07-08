@@ -2,6 +2,7 @@ import pytest
 
 from admcms_mcp.query_helpers import (
     admcms_date,
+    build_filter_where,
     company_filter,
     format_response,
     paging_clause,
@@ -170,3 +171,90 @@ class TestSubtractMonths:
     def test_raises_on_invalid_iso(self):
         with pytest.raises(ValueError):
             subtract_months("not-a-date", 1)
+
+
+class TestBuildFilterWhere:
+    def test_none_filters_produces_empty(self):
+        sql, params = build_filter_where(None, cs="cs", p="p", country_col="DeliveryCountry")
+        assert sql == ""
+        assert params == ()
+
+    def test_empty_dict_filters_produces_empty(self):
+        sql, params = build_filter_where({}, cs="cs", p="p", country_col="DeliveryCountry")
+        assert sql == ""
+        assert params == ()
+
+    def test_country_fragment_and_params(self):
+        sql, params = build_filter_where(
+            {"country": ["NL", "BE"]}, country_col="DeliveryCountry"
+        )
+        assert sql == " AND DeliveryCountry IN (?,?)"
+        assert params == ("NL", "BE")
+
+    def test_business_unit_maps_to_segment_group_codes(self):
+        sql, params = build_filter_where({"business_unit": ["B2B"]}, cs="cs")
+        assert sql == " AND cs.CustSuppGroup IN (?,?,?,?,?)"
+        assert params == ("G2", "G3", "G4", "G5", "G6")
+
+    def test_business_unit_union_dedup_stable_order(self):
+        sql, params = build_filter_where(
+            {"business_unit": ["B2C", "IC", "B2C"]}, cs="cs"
+        )
+        assert sql == " AND cs.CustSuppGroup IN (?,?)"
+        assert params == ("ND", "INTC")
+
+    def test_customer_group_fragment_and_params(self):
+        sql, params = build_filter_where({"customer_group": ["ND"]}, cs="cs")
+        assert sql == " AND cs.CustSuppGroup IN (?)"
+        assert params == ("ND",)
+
+    def test_make_fragment_and_params(self):
+        sql, params = build_filter_where({"make": ["DU"]}, p="p")
+        assert sql == " AND p.Make IN (?)"
+        assert params == ("DU",)
+
+    def test_productgroup_fragment_and_params(self):
+        sql, params = build_filter_where({"productgroup": ["ENG"]}, p="p")
+        assert sql == " AND p.Productgroup IN (?)"
+        assert params == ("ENG",)
+
+    def test_missing_alias_skips_dim(self):
+        sql, params = build_filter_where({"make": ["DU"]})
+        assert sql == ""
+        assert params == ()
+
+    def test_missing_alias_skips_dim_but_others_still_apply(self):
+        sql, params = build_filter_where(
+            {"make": ["DU"], "country": ["NL"]}, country_col="DeliveryCountry"
+        )
+        assert sql == " AND DeliveryCountry IN (?)"
+        assert params == ("NL",)
+
+    def test_empty_value_list_skips_dim(self):
+        sql, params = build_filter_where({"country": []}, country_col="DeliveryCountry")
+        assert sql == ""
+        assert params == ()
+
+    def test_unknown_dim_skipped(self):
+        sql, params = build_filter_where(
+            {"bogus_dim": ["x"]}, cs="cs", p="p", country_col="DeliveryCountry"
+        )
+        assert sql == ""
+        assert params == ()
+
+    def test_multiple_dims_anded_with_combined_params(self):
+        sql, params = build_filter_where(
+            {"customer_group": ["ND"], "make": ["DU"], "country": ["NL", "BE"]},
+            cs="cs",
+            p="p",
+            country_col="DeliveryCountry",
+        )
+        assert sql == (
+            " AND cs.CustSuppGroup IN (?) AND p.Make IN (?)"
+            " AND DeliveryCountry IN (?,?)"
+        )
+        assert params == ("ND", "DU", "NL", "BE")
+
+    def test_params_are_tuple(self):
+        sql, params = build_filter_where({"country": ["NL"]}, country_col="DeliveryCountry")
+        assert isinstance(params, tuple)
