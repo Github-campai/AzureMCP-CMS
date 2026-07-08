@@ -7,6 +7,8 @@ relay the problem to the user without the call failing at protocol level.
 
 import datetime
 import logging
+import threading
+import time
 from typing import Any
 
 from admcms_mcp.db import (
@@ -2383,6 +2385,69 @@ def get_dead_stock(
 
 _FILTER_OPTIONS_BUSINESS_UNITS = ["B2C", "B2B", "IC"]
 
+# Dropdown values change rarely, but the underlying queries do full-table scans
+# (PRODUCT.Make cold-scans in ~40s). Cache a fully-successful result for this long
+# so the expensive scan runs at most once per interval. Overridable for tests.
+_FILTER_OPTIONS_TTL_SECONDS = 6 * 60 * 60
+
+# One query per data dimension. Kept independent so a slow/timing-out query on one
+# dimension (e.g. make) cannot discard the others' already-fetched values.
+_FILTER_OPTION_DIMS = (
+    (
+        "customer_group",
+        "CustSuppGroup",
+        "SELECT TOP (30) CustSuppGroup "
+        "FROM CUSTSUPPLIER "
+        "WHERE CustSuppType = '1' AND CustSuppGroup IS NOT NULL "
+        "GROUP BY CustSuppGroup "
+        "ORDER BY COUNT(*) DESC",
+        30,
+    ),
+    (
+        "country",
+        "DeliveryCountry",
+        "SELECT TOP (50) DeliveryCountry "
+        "FROM SALESINVOICE "
+        "WHERE DeliveryCountry IS NOT NULL "
+        "GROUP BY DeliveryCountry "
+        "ORDER BY COUNT(*) DESC",
+        50,
+    ),
+    (
+        "make",
+        "Make",
+        "SELECT TOP (100) Make "
+        "FROM PRODUCT "
+        "WHERE Make IS NOT NULL "
+        "GROUP BY Make "
+        "ORDER BY COUNT(*) DESC",
+        100,
+    ),
+    (
+        "productgroup",
+        "Productgroup",
+        "SELECT TOP (100) Productgroup "
+        "FROM PRODUCT "
+        "WHERE Productgroup IS NOT NULL "
+        "GROUP BY Productgroup "
+        "ORDER BY COUNT(*) DESC",
+        100,
+    ),
+)
+
+_filter_options_lock = threading.Lock()
+# {"data": <last result dict without business_unit/error>, "ts": <monotonic seconds>}.
+# ts is only advanced to "fresh" on a fully-successful refresh; a partial/failed
+# refresh keeps ts stale so the next call retries the missing dimensions.
+_filter_options_cache: dict[str, Any] = {"data": None, "ts": 0.0}
+
+
+def _reset_filter_options_cache() -> None:
+    """Clear the in-process cache (used by tests to isolate cases)."""
+    with _filter_options_lock:
+        _filter_options_cache["data"] = None
+        _filter_options_cache["ts"] = 0.0
+
 
 def get_filter_options() -> dict[str, Any]:
     """Return distinct values for each filter dimension (for building UI dropdowns).
@@ -2398,61 +2463,47 @@ def get_filter_options() -> dict[str, Any]:
     - `make` / `productgroup`: distinct PRODUCT.Make / PRODUCT.Productgroup,
       ordered by frequency, top 100.
 
-    Returns `{customer_group, business_unit, country, make, productgroup}`;
-    on failure returns the same keys (empty lists, business_unit still the
-    fixed set) plus an `error` string.
+    Each dimension is queried independently: if one query fails or times out, the
+    others still return, and the last known-good values for the failed dimension
+    are reused. A fully-successful result is cached for ``_FILTER_OPTIONS_TTL_SECONDS``
+    so the expensive cold table scans run at most once per interval.
+
+    Returns `{customer_group, business_unit, country, make, productgroup}`, plus an
+    `error` string listing any dimensions that failed on this refresh.
     """
-    try:
-        cg_sql = (
-            "SELECT TOP (30) CustSuppGroup "
-            "FROM CUSTSUPPLIER "
-            "WHERE CustSuppType = '1' AND CustSuppGroup IS NOT NULL "
-            "GROUP BY CustSuppGroup "
-            "ORDER BY COUNT(*) DESC"
-        )
-        cg_rows = execute_query_params(cg_sql, (), max_rows=30)
+    now = time.monotonic()
+    cached = _filter_options_cache["data"]
+    if cached is not None and (now - _filter_options_cache["ts"]) < _FILTER_OPTIONS_TTL_SECONDS:
+        result = {k: list(v) for k, v in cached.items()}
+        result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
+        return result
 
-        country_sql = (
-            "SELECT TOP (50) DeliveryCountry "
-            "FROM SALESINVOICE "
-            "WHERE DeliveryCountry IS NOT NULL "
-            "GROUP BY DeliveryCountry "
-            "ORDER BY COUNT(*) DESC"
-        )
-        country_rows = execute_query_params(country_sql, (), max_rows=50)
+    # Seed from last known-good so a transient failure keeps prior values.
+    prev = cached or {}
+    dims: dict[str, list[Any]] = {
+        key: list(prev.get(key, [])) for key, _col, _sql, _cap in _FILTER_OPTION_DIMS
+    }
+    errors: dict[str, str] = {}
+    for key, col, sql, cap in _FILTER_OPTION_DIMS:
+        try:
+            rows = execute_query_params(sql, (), max_rows=cap)
+            vals = [r.get(col) for r in rows if r.get(col) is not None]
+            if vals:
+                dims[key] = vals
+        except Exception as e:  # noqa: BLE001 - one bad dim must not sink the rest
+            logger.warning("get_filter_options: %s query failed: %s", key, e)
+            errors[key] = str(e)
 
-        make_sql = (
-            "SELECT TOP (100) Make "
-            "FROM PRODUCT "
-            "WHERE Make IS NOT NULL "
-            "GROUP BY Make "
-            "ORDER BY COUNT(*) DESC"
-        )
-        make_rows = execute_query_params(make_sql, (), max_rows=100)
+    with _filter_options_lock:
+        _filter_options_cache["data"] = {k: list(v) for k, v in dims.items()}
+        # Only treat as fresh when every dimension succeeded; otherwise force a retry
+        # on the next call instead of caching a partial result for the full TTL.
+        _filter_options_cache["ts"] = now if not errors else 0.0
 
-        productgroup_sql = (
-            "SELECT TOP (100) Productgroup "
-            "FROM PRODUCT "
-            "WHERE Productgroup IS NOT NULL "
-            "GROUP BY Productgroup "
-            "ORDER BY COUNT(*) DESC"
+    result: dict[str, Any] = {k: list(v) for k, v in dims.items()}
+    result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
+    if errors:
+        result["error"] = "Execution error: " + "; ".join(
+            f"{k}: {v}" for k, v in errors.items()
         )
-        productgroup_rows = execute_query_params(productgroup_sql, (), max_rows=100)
-
-        return {
-            "customer_group": [r.get("CustSuppGroup") for r in cg_rows],
-            "business_unit": list(_FILTER_OPTIONS_BUSINESS_UNITS),
-            "country": [r.get("DeliveryCountry") for r in country_rows],
-            "make": [r.get("Make") for r in make_rows],
-            "productgroup": [r.get("Productgroup") for r in productgroup_rows],
-        }
-    except Exception as e:
-        logger.exception("get_filter_options failed")
-        return {
-            "customer_group": [],
-            "business_unit": list(_FILTER_OPTIONS_BUSINESS_UNITS),
-            "country": [],
-            "make": [],
-            "productgroup": [],
-            "error": f"Execution error: {e}",
-        }
+    return result

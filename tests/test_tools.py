@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from admcms_mcp.tools import get_dead_stock, get_lookups, get_schema, query_database
 
 
@@ -1591,6 +1593,15 @@ class TestGetDeadStockErrorHandling:
 
 
 class TestGetFilterOptions:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        # The in-process cache is module-global; isolate every case.
+        from admcms_mcp.tools import _reset_filter_options_cache
+
+        _reset_filter_options_cache()
+        yield
+        _reset_filter_options_cache()
+
     @patch("admcms_mcp.tools.execute_query_params")
     def test_returns_five_keys_with_distinct_values(self, mock_execute):
         from admcms_mcp.tools import get_filter_options
@@ -1637,3 +1648,67 @@ class TestGetFilterOptions:
         assert result["make"] == []
         assert result["productgroup"] == []
         assert "DB down" in result["error"]
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_one_slow_dim_does_not_blank_the_others(self, mock_execute):
+        # make (3rd query) times out; customer_group/country/productgroup must survive.
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            TimeoutError("Query timeout expired"),
+            [{"Productgroup": "HOD"}],
+        ]
+        result = get_filter_options()
+        assert result["customer_group"] == ["ND"]
+        assert result["country"] == ["NL"]
+        assert result["productgroup"] == ["HOD"]
+        assert result["make"] == []
+        assert "make" in result["error"]
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_successful_result_is_cached_no_second_db_hit(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            [{"Productgroup": "HOD"}],
+        ]
+        first = get_filter_options()
+        second = get_filter_options()
+        # Second call is served from cache: no further DB calls beyond the first 4.
+        assert mock_execute.call_count == 4
+        assert second["make"] == first["make"] == ["MAHLE"]
+        assert "error" not in second
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_partial_result_is_not_cached_fresh_and_merges_prior_good(
+        self, mock_execute
+    ):
+        from admcms_mcp.tools import get_filter_options
+
+        # Call 1: everything ok EXCEPT productgroup -> partial, so NOT cached fresh.
+        # Call 2: make fails, productgroup recovers -> make must retain call-1 value.
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            RuntimeError("boom"),
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            RuntimeError("timeout"),
+            [{"Productgroup": "HOD"}],
+        ]
+        first = get_filter_options()
+        assert first["make"] == ["MAHLE"]
+        assert "productgroup" in first["error"]
+
+        second = get_filter_options()
+        # Because call 1 was partial (ts stale), call 2 re-queries (8 total DB calls).
+        assert mock_execute.call_count == 8
+        assert second["make"] == ["MAHLE"]  # merged from prior known-good
+        assert second["productgroup"] == ["HOD"]  # recovered this round
+        assert "make" in second["error"]
