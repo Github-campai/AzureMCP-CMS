@@ -17,6 +17,7 @@ from admcms_mcp.db import (
 )
 from admcms_mcp.query_helpers import (
     admcms_date,
+    build_filter_where,
     format_response,
     paging_clause,
     paging_summary,
@@ -143,65 +144,114 @@ _GROUP_KEY_FIELD = {
 }
 
 
-def _fetch_revenue(start_date: str, end_date: str, group_by: str) -> list[dict[str, Any]]:
-    """Run the revenue SQL for a given date range + group_by. No LY merging."""
+def _fetch_revenue(
+    start_date: str, end_date: str, group_by: str, filters: dict | None = None
+) -> list[dict[str, Any]]:
+    """Run the revenue SQL for a given date range + group_by. No LY merging.
+
+    `filters` (optional, additive): country works on every group_by
+    (Salesinvoice.DeliveryCountry, header-level); customer_group/business_unit
+    add a CUSTSUPPLIER join when not already present; make/productgroup only
+    apply when group_by is itself "make"/"productgroup" (the only variants
+    that join PRODUCT). Unsupported dim/group_by combinations are ignored.
+    """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     base_where = "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
     params = (start_c8, end_c8)
+    needs_cs = _wants_cs(filters)
 
     if group_by == "total":
+        from_clause = "FROM SALESINVOICE "
+        if needs_cs:
+            from_clause += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer "
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
+        )
         sql = (
             "SELECT SUM(LineTotal) AS total_amount, "
             "COUNT(*) AS invoice_count "
-            "FROM SALESINVOICE " + base_where
+            + from_clause + base_where + filter_sql
         )
-        rows = execute_query_params(sql, params, max_rows=1)
+        rows = execute_query_params(sql, params + filter_params, max_rows=1)
         return rows or [{"total_amount": 0, "invoice_count": 0}]
 
     if group_by == "month":
+        from_clause = "FROM SALESINVOICE "
+        if needs_cs:
+            from_clause += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer "
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
+        )
         sql = (
             "SELECT SUBSTRING(InvoiceDate, 1, 6) AS period, "
             "SUM(LineTotal) AS amount "
-            "FROM SALESINVOICE " + base_where + " "
+            + from_clause + base_where + filter_sql + " "
             "GROUP BY SUBSTRING(InvoiceDate, 1, 6) "
             "ORDER BY period"
         )
+        params = params + filter_params
     elif group_by == "country":
+        from_clause = "FROM SALESINVOICE "
+        if needs_cs:
+            from_clause += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer "
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
+        )
         sql = (
             "SELECT DeliveryCountry, SUM(LineTotal) AS amount "
-            "FROM SALESINVOICE " + base_where + " "
+            + from_clause + base_where + filter_sql + " "
             "GROUP BY DeliveryCountry ORDER BY amount DESC"
         )
+        params = params + filter_params
     elif group_by == "make":
+        join_clause = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer " if needs_cs else ""
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
+        )
         sql = (
             "SELECT p.Make, SUM(sil.InvoiceAmountHC) AS amount "
             "FROM SALESINVOICELINES sil "
             "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
             "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
+            + join_clause
             + base_where.replace("InvoiceDate", "si.InvoiceDate")
+            + filter_sql
             + " "
             "GROUP BY p.Make ORDER BY amount DESC"
         )
+        params = params + filter_params
     elif group_by == "productgroup":
+        join_clause = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer " if needs_cs else ""
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
+        )
         sql = (
             "SELECT p.Productgroup, SUM(sil.InvoiceAmountHC) AS amount "
             "FROM SALESINVOICELINES sil "
             "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
             "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
+            + join_clause
             + base_where.replace("InvoiceDate", "si.InvoiceDate")
+            + filter_sql
             + " "
             "GROUP BY p.Productgroup ORDER BY amount DESC"
         )
+        params = params + filter_params
     else:  # customer
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs", country_col="si.DeliveryCountry"
+        )
         sql = (
             "SELECT cs.Searchname, SUM(si.LineTotal) AS amount "
             "FROM SALESINVOICE si "
             "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
             + base_where.replace("InvoiceDate", "si.InvoiceDate")
+            + filter_sql
             + " "
             "GROUP BY cs.Searchname ORDER BY amount DESC"
         )
+        params = params + filter_params
     return execute_query_params(sql, params, max_rows=500)
 
 
@@ -222,11 +272,22 @@ def _pct(part: float, whole: float) -> float | None:
     return (part / whole * 100) if whole else None
 
 
+def _wants_cs(filters: dict | None) -> bool:
+    """True when `filters` asks for a dim that requires a CUSTSUPPLIER join."""
+    return bool(filters and (filters.get("customer_group") or filters.get("business_unit")))
+
+
+def _wants_p(filters: dict | None) -> bool:
+    """True when `filters` asks for a dim that requires a PRODUCT join."""
+    return bool(filters and (filters.get("make") or filters.get("productgroup")))
+
+
 def get_revenue(
     start_date: str,
     end_date: str,
     group_by: str = "total",
     include_ly: bool = False,
+    filters: dict | None = None,
 ) -> dict[str, Any]:
     """Aggregate sales invoice revenue between two dates.
 
@@ -238,6 +299,12 @@ def get_revenue(
     level groupings (total, month, country, customer). For per-make and
     per-productgroup breakdowns, SALESINVOICELINES.InvoiceAmountHC is used
     because LineTotal is not on the line level.
+
+    `filters` (optional dict, additive — omitting it leaves behaviour
+    unchanged): `country` applies on every group_by; `customer_group` /
+    `business_unit` apply on every group_by (adds a CUSTSUPPLIER join when
+    needed); `make` / `productgroup` only apply when group_by is itself
+    "make" or "productgroup" (the only variants that join PRODUCT).
     """
     try:
         if group_by not in _VALID_GROUP_BY:
@@ -248,7 +315,7 @@ def get_revenue(
                 ),
             )
 
-        current = _fetch_revenue(start_date, end_date, group_by)
+        current = _fetch_revenue(start_date, end_date, group_by, filters=filters)
 
         # --- include_ly = False: classic behaviour ---
         if not include_ly:
@@ -277,7 +344,7 @@ def get_revenue(
         # --- include_ly = True: fetch LY and merge ---
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly_rows = _fetch_revenue(ly_start, ly_end, group_by)
+        ly_rows = _fetch_revenue(ly_start, ly_end, group_by, filters=filters)
 
         if group_by == "total":
             cur_row = current[0]
@@ -377,8 +444,18 @@ _MARGIN_SEGMENT_CASE = (
 )
 
 
-def _fetch_margin(start_date: str, end_date: str, group_by: str) -> list[dict[str, Any]]:
-    """Line-level turnover + cost + margin, grouped as requested."""
+def _fetch_margin(
+    start_date: str, end_date: str, group_by: str, filters: dict | None = None
+) -> list[dict[str, Any]]:
+    """Line-level turnover + cost + margin, grouped as requested.
+
+    `filters` (optional, additive): every group_by variant shares the same
+    `sil`/`si` base FROM, so country (si.DeliveryCountry) always applies;
+    customer_group/business_unit add a CUSTSUPPLIER join when the "customer"/
+    "segment" group_by hasn't already added one; make/productgroup add a
+    PRODUCT join when the "make"/"productgroup" group_by hasn't already
+    added one.
+    """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     where = "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?"
@@ -387,42 +464,61 @@ def _fetch_margin(start_date: str, end_date: str, group_by: str) -> list[dict[st
     base_from = "FROM SalesinvoiceLines sil JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
     amounts = "SUM(sil.InvoiceAmountHC) AS turnover, SUM(sil.CostAmountBookedHC) AS cost"
 
+    has_cs = group_by in ("customer", "segment")
+    has_p = group_by in ("make", "productgroup")
+    needs_cs = _wants_cs(filters) and not has_cs
+    needs_p = _wants_p(filters) and not has_p
+
+    extra_join = ""
+    if needs_cs:
+        extra_join += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
+    if needs_p:
+        extra_join += "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
+
+    filter_sql, filter_params = build_filter_where(
+        filters,
+        cs="cs" if (has_cs or needs_cs) else None,
+        p="p" if (has_p or needs_p) else None,
+        country_col="si.DeliveryCountry",
+    )
+    params = params + filter_params
+
     if group_by == "total":
-        sql = f"SELECT {amounts} {base_from}{where}"
+        sql = f"SELECT {amounts} {base_from}{extra_join}{where}{filter_sql}"
         return execute_query_params(sql, params, max_rows=1) or [{"turnover": 0, "cost": 0}]
 
     if group_by == "country":
         sql = (
             f"SELECT si.DeliveryCountry, {amounts} "
-            f"{base_from}{where} "
+            f"{base_from}{extra_join}{where}{filter_sql} "
             "GROUP BY si.DeliveryCountry ORDER BY turnover DESC"
         )
     elif group_by == "make":
         sql = (
             f"SELECT p.Make, {amounts} "
-            f"{base_from}JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-            f"{where} "
+            f"{base_from}JOIN PRODUCT p ON p.Productcode = sil.Productcode {extra_join}"
+            f"{where}{filter_sql} "
             "GROUP BY p.Make ORDER BY turnover DESC"
         )
     elif group_by == "productgroup":
         sql = (
             f"SELECT p.Productgroup, {amounts} "
-            f"{base_from}JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-            f"{where} "
+            f"{base_from}JOIN PRODUCT p ON p.Productcode = sil.Productcode {extra_join}"
+            f"{where}{filter_sql} "
             "GROUP BY p.Productgroup ORDER BY turnover DESC"
         )
     elif group_by == "customer":
         sql = (
             f"SELECT cs.Searchname, {amounts} "
-            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
-            f"{where} "
+            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"{where}{filter_sql} "
             "GROUP BY cs.Searchname ORDER BY turnover DESC"
         )
     else:  # segment
         sql = (
             f"SELECT {_MARGIN_SEGMENT_CASE} AS business_unit, {amounts} "
-            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
-            f"{where} "
+            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"{where}{filter_sql} "
             f"GROUP BY {_MARGIN_SEGMENT_CASE} ORDER BY turnover DESC"
         )
     return execute_query_params(sql, params, max_rows=500)
@@ -453,6 +549,7 @@ def get_margin_report(
     end_date: str,
     group_by: str = "total",
     include_ly: bool = False,
+    filters: dict | None = None,
 ) -> dict[str, Any]:
     """Gross-margin analysis on SalesinvoiceLines.
 
@@ -461,6 +558,12 @@ def get_margin_report(
 
     `group_by`: total, country, make, productgroup, customer, segment.
     `include_ly`: same period 1 year earlier, delta added per row.
+
+    `filters` (optional dict, additive): supports customer_group,
+    business_unit, country, make, productgroup on every group_by — the
+    query always joins SalesinvoiceLines+Salesinvoice, and adds a
+    CUSTSUPPLIER/PRODUCT join on demand when the chosen group_by hasn't
+    already added one.
 
     NOTE: this is line-level gross margin (sale - cost of goods). It does
     not deduct shipping, VAT, order-handling costs or returns. If your
@@ -480,7 +583,7 @@ def get_margin_report(
         admcms_date(start_date)
         admcms_date(end_date)
 
-        current_raw = _fetch_margin(start_date, end_date, group_by)
+        current_raw = _fetch_margin(start_date, end_date, group_by, filters=filters)
         current = [_enrich_margin_row(r) for r in current_raw]
 
         if not include_ly:
@@ -515,7 +618,7 @@ def get_margin_report(
         # include_ly
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly_raw = _fetch_margin(ly_start, ly_end, group_by)
+        ly_raw = _fetch_margin(ly_start, ly_end, group_by, filters=filters)
         ly = [_enrich_margin_row(r) for r in ly_raw]
 
         if group_by == "total":
@@ -611,15 +714,26 @@ def get_margin_report(
         return format_response(data=[], error=f"Execution error: {e}")
 
 
-def _fetch_kpi_block(start_date: str, end_date: str) -> dict[str, Any]:
+def _fetch_kpi_block(
+    start_date: str, end_date: str, filters: dict | None = None
+) -> dict[str, Any]:
     """Run 2 aggregate queries over Salesinvoice + SalesinvoiceLines.
 
     Returns a single dict with all headline KPI values.
+
+    `filters` (optional, additive): country and customer_group/business_unit
+    apply to both underlying queries (a CUSTSUPPLIER join is added on demand).
+    make/productgroup are not supported (no PRODUCT join available here).
     """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     params = (start_c8, end_c8)
+    needs_cs = _wants_cs(filters)
 
+    header_join = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer " if needs_cs else ""
+    header_filter_sql, header_filter_params = build_filter_where(
+        filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
+    )
     header_sql = (
         "SELECT "
         "SUM(LineTotal) AS turnover, "
@@ -629,18 +743,28 @@ def _fetch_kpi_block(start_date: str, end_date: str) -> dict[str, Any]:
         "SUM(ShipCost) AS shipping_revenue, "
         "SUM(ShipCostCalculated) AS shipping_cost "
         "FROM Salesinvoice "
-        "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
+        f"{header_join}"
+        "WHERE InvoiceDate >= ? AND InvoiceDate < ?" + header_filter_sql
     )
-    header_rows = execute_query_params(header_sql, params, max_rows=1)
+    header_rows = execute_query_params(
+        header_sql, params + header_filter_params, max_rows=1
+    )
     h = header_rows[0] if header_rows else {}
 
+    lines_join = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = inv.Customer " if needs_cs else ""
+    lines_filter_sql, lines_filter_params = build_filter_where(
+        filters, cs="cs" if needs_cs else None, country_col="inv.DeliveryCountry"
+    )
     lines_sql = (
         "SELECT COUNT(*) AS line_count, SUM(ThisIinvoice) AS item_count "
         "FROM SalesinvoiceLines sil "
         "JOIN Salesinvoice inv ON inv.Invoicenr = sil.Invoicenr "
-        "WHERE inv.InvoiceDate >= ? AND inv.InvoiceDate < ?"
+        f"{lines_join}"
+        "WHERE inv.InvoiceDate >= ? AND inv.InvoiceDate < ?" + lines_filter_sql
     )
-    line_rows = execute_query_params(lines_sql, params, max_rows=1)
+    line_rows = execute_query_params(
+        lines_sql, params + lines_filter_params, max_rows=1
+    )
     ln = line_rows[0] if line_rows else {}
 
     turnover = float(h.get("turnover") or 0)
@@ -663,7 +787,12 @@ def _fetch_kpi_block(start_date: str, end_date: str) -> dict[str, Any]:
     }
 
 
-def get_kpi_summary(start_date: str, end_date: str, include_ly: bool = True) -> dict[str, Any]:
+def get_kpi_summary(
+    start_date: str,
+    end_date: str,
+    include_ly: bool = True,
+    filters: dict | None = None,
+) -> dict[str, Any]:
     """Top-level performance KPIs (turnover, shipping, customers, AOV, lines).
 
     Replicates the "KPI cards" row of a typical management dashboard.
@@ -672,9 +801,14 @@ def get_kpi_summary(start_date: str, end_date: str, include_ly: bool = True) -> 
 
     All amounts are in home currency (HC). Turnover uses
     SALESINVOICE.LineTotal (ex-VAT). AOV = turnover / invoice_count.
+
+    `filters` (optional dict, additive): supports `country` and
+    `customer_group`/`business_unit` (adds a CUSTSUPPLIER join). `make`/
+    `productgroup` are not supported by this tool (header + line-count
+    queries have no PRODUCT join) and are ignored if passed.
     """
     try:
-        current = _fetch_kpi_block(start_date, end_date)
+        current = _fetch_kpi_block(start_date, end_date, filters=filters)
         if not include_ly:
             return format_response(
                 data=[current],
@@ -686,7 +820,7 @@ def get_kpi_summary(start_date: str, end_date: str, include_ly: bool = True) -> 
 
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly = _fetch_kpi_block(ly_start, ly_end)
+        ly = _fetch_kpi_block(ly_start, ly_end, filters=filters)
 
         deltas: dict[str, Any] = {}
         for metric in (
@@ -780,17 +914,26 @@ def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict[str, An
         return format_response(data=[], error=f"Execution error: {e}")
 
 
-def get_top_customers(start_date: str, end_date: str, limit: int = 10) -> dict[str, Any]:
+def get_top_customers(
+    start_date: str, end_date: str, limit: int = 10, filters: dict | None = None
+) -> dict[str, Any]:
     """Return the top customers on invoice revenue between two dates.
 
     Filters to CustSuppType = '1' (customers only, not suppliers).
     Revenue uses SALESINVOICE.LineTotal (ex-VAT, home currency). Dates
     are ISO YYYY-MM-DD; internally converted to ADMCMS char(8).
+
+    `filters` (optional dict, additive): supports `country` (si.DeliveryCountry)
+    and `customer_group`/`business_unit` (CUSTSUPPLIER is already joined as
+    `cs`). `make`/`productgroup` are not supported (no PRODUCT join).
     """
     try:
         effective_limit = max(1, min(int(limit), _MAX_LIMIT))
         start_c8 = admcms_date(start_date)
         end_c8 = admcms_date(end_date)
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs", country_col="si.DeliveryCountry"
+        )
         sql = (
             f"SELECT TOP ({effective_limit}) cs.CustSuppnr, cs.Searchname, "
             "cs.CustSuppGroup, "
@@ -799,11 +942,13 @@ def get_top_customers(start_date: str, end_date: str, limit: int = 10) -> dict[s
             "FROM SALESINVOICE si "
             "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
             "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
-            "AND cs.CustSuppType = '1' "
+            "AND cs.CustSuppType = '1'" + filter_sql + " "
             "GROUP BY cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup "
             "ORDER BY total_amount DESC"
         )
-        rows = execute_query_params(sql, (start_c8, end_c8), max_rows=effective_limit)
+        rows = execute_query_params(
+            sql, (start_c8, end_c8) + filter_params, max_rows=effective_limit
+        )
         total = sum(float(r.get("total_amount") or 0) for r in rows)
         return format_response(
             data=rows,
@@ -1768,7 +1913,14 @@ def get_salesrep_performance(
 _VALID_DISCOUNT_GROUP_BY = ("segment", "customer", "make", "productgroup", "salesrep", "total")
 
 
-def _fetch_discount(start_date: str, end_date: str, group_by: str) -> list[dict[str, Any]]:
+def _fetch_discount(
+    start_date: str, end_date: str, group_by: str, filters: dict | None = None
+) -> list[dict[str, Any]]:
+    """`filters` (optional, additive): supports customer_group, business_unit,
+    make, productgroup on every group_by (adds CUSTSUPPLIER/PRODUCT joins on
+    demand when the chosen group_by hasn't already added one). `country` is
+    NOT supported by this tool (out of scope for this slice) and is ignored.
+    """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     where = (
@@ -1785,9 +1937,27 @@ def _fetch_discount(start_date: str, end_date: str, group_by: str) -> list[dict[
     )
     base_from = "FROM SalesinvoiceLines sil JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
 
+    has_cs = group_by in ("segment", "customer")
+    has_p = group_by in ("make", "productgroup")
+    needs_cs = _wants_cs(filters) and not has_cs
+    needs_p = _wants_p(filters) and not has_p
+
+    extra_join = ""
+    if needs_cs:
+        extra_join += "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer "
+    if needs_p:
+        extra_join += "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
+
+    filter_sql, filter_params = build_filter_where(
+        filters,
+        cs="cs" if (has_cs or needs_cs) else None,
+        p="p" if (has_p or needs_p) else None,
+    )
+    params = (start_c8, end_c8) + filter_params
+
     if group_by == "total":
-        sql = f"SELECT {measures} {base_from}{where}"
-        rows = execute_query_params(sql, (start_c8, end_c8), max_rows=1)
+        sql = f"SELECT {measures} {base_from}{extra_join}{where}{filter_sql}"
+        rows = execute_query_params(sql, params, max_rows=1)
         return rows or [
             {"line_count": 0, "net_turnover": 0, "total_discount": 0, "avg_discount": 0}
         ]
@@ -1796,45 +1966,48 @@ def _fetch_discount(start_date: str, end_date: str, group_by: str) -> list[dict[
         sql = (
             f"SELECT {_MARGIN_SEGMENT_CASE} AS segment, {measures} "
             f"{base_from}"
-            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer "
-            f"{where} "
+            f"JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"{where}{filter_sql} "
             f"GROUP BY {_MARGIN_SEGMENT_CASE} ORDER BY total_discount DESC"
         )
     elif group_by == "customer":
         sql = (
             f"SELECT cs.Searchname, {measures} "
             f"{base_from}"
-            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer "
-            f"{where} "
+            f"JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"{where}{filter_sql} "
             "GROUP BY cs.Searchname ORDER BY total_discount DESC"
         )
     elif group_by == "make":
         sql = (
             f"SELECT p.Make, {measures} "
             f"{base_from}"
-            "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-            f"{where} "
+            f"JOIN PRODUCT p ON p.Productcode = sil.Productcode {extra_join}"
+            f"{where}{filter_sql} "
             "GROUP BY p.Make ORDER BY total_discount DESC"
         )
     elif group_by == "productgroup":
         sql = (
             f"SELECT p.Productgroup, {measures} "
             f"{base_from}"
-            "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-            f"{where} "
+            f"JOIN PRODUCT p ON p.Productcode = sil.Productcode {extra_join}"
+            f"{where}{filter_sql} "
             "GROUP BY p.Productgroup ORDER BY total_discount DESC"
         )
     else:  # salesrep
         sql = (
             f"SELECT si.Salesrep, {measures} "
-            f"{base_from}{where} "
+            f"{base_from}{extra_join}{where}{filter_sql} "
             "GROUP BY si.Salesrep ORDER BY total_discount DESC"
         )
-    return execute_query_params(sql, (start_c8, end_c8), max_rows=500)
+    return execute_query_params(sql, params, max_rows=500)
 
 
 def get_discount_analysis(
-    start_date: str, end_date: str, group_by: str = "segment"
+    start_date: str,
+    end_date: str,
+    group_by: str = "segment",
+    filters: dict | None = None,
 ) -> dict[str, Any]:
     """Discount analysis on SalesinvoiceLines (DiscountAmount > 0).
 
@@ -1842,6 +2015,10 @@ def get_discount_analysis(
     is calculated against that gross.
 
     `group_by`: segment, customer, make, productgroup, salesrep, total.
+
+    `filters` (optional dict, additive): supports customer_group,
+    business_unit, make, productgroup. `country` is not supported by this
+    tool and is ignored if passed.
     """
     try:
         if group_by not in _VALID_DISCOUNT_GROUP_BY:
@@ -1854,7 +2031,7 @@ def get_discount_analysis(
             )
         admcms_date(start_date)
         admcms_date(end_date)
-        rows = _fetch_discount(start_date, end_date, group_by)
+        rows = _fetch_discount(start_date, end_date, group_by, filters=filters)
 
         def _enrich(row: dict) -> dict:
             net = float(row.get("net_turnover") or 0)
@@ -1890,9 +2067,20 @@ def get_discount_analysis(
         return format_response(data=[], error=f"Execution error: {e}")
 
 
-def _fetch_order_origin(start_date: str, end_date: str) -> list[dict[str, Any]]:
+def _fetch_order_origin(
+    start_date: str, end_date: str, filters: dict | None = None
+) -> list[dict[str, Any]]:
+    """`filters` (optional, additive): supports `country` (si.DeliveryCountry)
+    and `customer_group`/`business_unit` (adds a CUSTSUPPLIER join when
+    requested). `make`/`productgroup` are not supported (no PRODUCT join).
+    """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
+    needs_cs = _wants_cs(filters)
+    join_clause = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer " if needs_cs else ""
+    filter_sql, filter_params = build_filter_where(
+        filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
+    )
     sql = (
         "SELECT sil.OrderOrigin, "
         "COUNT(*) AS line_count, "
@@ -1900,26 +2088,34 @@ def _fetch_order_origin(start_date: str, end_date: str) -> list[dict[str, Any]]:
         "SUM(sil.InvoiceAmountHC) AS total_amount "
         "FROM SalesinvoiceLines sil "
         "JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
+        f"{join_clause}"
         "WHERE si.InvoiceType = '0' "
-        "AND si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+        "AND si.InvoiceDate >= ? AND si.InvoiceDate < ?" + filter_sql + " "
         "GROUP BY sil.OrderOrigin ORDER BY line_count DESC"
     )
-    return execute_query_params(sql, (start_c8, end_c8), max_rows=100)
+    return execute_query_params(sql, (start_c8, end_c8) + filter_params, max_rows=100)
 
 
 def get_order_origin_mix(
-    start_date: str, end_date: str, include_ly: bool = False
+    start_date: str,
+    end_date: str,
+    include_ly: bool = False,
+    filters: dict | None = None,
 ) -> dict[str, Any]:
     """Order-channel mix by SalesinvoiceLines.OrderOrigin.
 
     Known dominant codes from schema: '06' (web, ~88% of lines), '12', '11',
     '01', ''. Per origin returns line_count, invoice_count, total_amount,
     percentage of total lines.
+
+    `filters` (optional dict, additive): supports `country` and
+    `customer_group`/`business_unit` (adds a CUSTSUPPLIER join). `make`/
+    `productgroup` are not supported by this tool and are ignored if passed.
     """
     try:
         admcms_date(start_date)
         admcms_date(end_date)
-        current = _fetch_order_origin(start_date, end_date)
+        current = _fetch_order_origin(start_date, end_date, filters=filters)
         total_current = sum(int(r.get("line_count") or 0) for r in current)
 
         def _enrich(row: dict, grand: int) -> dict:
@@ -1942,7 +2138,7 @@ def get_order_origin_mix(
 
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly_rows = _fetch_order_origin(ly_start, ly_end)
+        ly_rows = _fetch_order_origin(ly_start, ly_end, filters=filters)
         total_ly = sum(int(r.get("line_count") or 0) for r in ly_rows)
         ly_by_key = {r.get("OrderOrigin"): r for r in ly_rows}
         merged = []
@@ -2183,3 +2379,80 @@ def get_dead_stock(
     except Exception as e:
         logger.exception("get_dead_stock failed")
         return format_response(data=[], error=f"Execution error: {e}")
+
+
+_FILTER_OPTIONS_BUSINESS_UNITS = ["B2C", "B2B", "IC"]
+
+
+def get_filter_options() -> dict[str, Any]:
+    """Return distinct values for each filter dimension (for building UI dropdowns).
+
+    Backs the `filters` arg on get_revenue / get_margin_report / get_kpi_summary /
+    get_top_customers / get_order_origin_mix / get_discount_analysis.
+
+    - `customer_group`: distinct CUSTSUPPLIER.CustSuppGroup for real customers
+      (CustSuppType='1'), ordered by frequency, top 30.
+    - `business_unit`: fixed set derived from customer_group (B2C/B2B/IC).
+    - `country`: distinct SALESINVOICE.DeliveryCountry, ordered by frequency,
+      top 50.
+    - `make` / `productgroup`: distinct PRODUCT.Make / PRODUCT.Productgroup,
+      ordered by frequency, top 100.
+
+    Returns `{customer_group, business_unit, country, make, productgroup}`;
+    on failure returns the same keys (empty lists, business_unit still the
+    fixed set) plus an `error` string.
+    """
+    try:
+        cg_sql = (
+            "SELECT TOP (30) CustSuppGroup "
+            "FROM CUSTSUPPLIER "
+            "WHERE CustSuppType = '1' AND CustSuppGroup IS NOT NULL "
+            "GROUP BY CustSuppGroup "
+            "ORDER BY COUNT(*) DESC"
+        )
+        cg_rows = execute_query_params(cg_sql, (), max_rows=30)
+
+        country_sql = (
+            "SELECT TOP (50) DeliveryCountry "
+            "FROM SALESINVOICE "
+            "WHERE DeliveryCountry IS NOT NULL "
+            "GROUP BY DeliveryCountry "
+            "ORDER BY COUNT(*) DESC"
+        )
+        country_rows = execute_query_params(country_sql, (), max_rows=50)
+
+        make_sql = (
+            "SELECT TOP (100) Make "
+            "FROM PRODUCT "
+            "WHERE Make IS NOT NULL "
+            "GROUP BY Make "
+            "ORDER BY COUNT(*) DESC"
+        )
+        make_rows = execute_query_params(make_sql, (), max_rows=100)
+
+        productgroup_sql = (
+            "SELECT TOP (100) Productgroup "
+            "FROM PRODUCT "
+            "WHERE Productgroup IS NOT NULL "
+            "GROUP BY Productgroup "
+            "ORDER BY COUNT(*) DESC"
+        )
+        productgroup_rows = execute_query_params(productgroup_sql, (), max_rows=100)
+
+        return {
+            "customer_group": [r.get("CustSuppGroup") for r in cg_rows],
+            "business_unit": list(_FILTER_OPTIONS_BUSINESS_UNITS),
+            "country": [r.get("DeliveryCountry") for r in country_rows],
+            "make": [r.get("Make") for r in make_rows],
+            "productgroup": [r.get("Productgroup") for r in productgroup_rows],
+        }
+    except Exception as e:
+        logger.exception("get_filter_options failed")
+        return {
+            "customer_group": [],
+            "business_unit": list(_FILTER_OPTIONS_BUSINESS_UNITS),
+            "country": [],
+            "make": [],
+            "productgroup": [],
+            "error": f"Execution error: {e}",
+        }

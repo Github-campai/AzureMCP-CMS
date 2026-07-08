@@ -301,6 +301,78 @@ class TestGetRevenueCountryAndLY:
         assert rows["202601"]["delta"] == 20.0
 
 
+class TestGetRevenueFilters:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_country_filter_adds_where_and_param(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
+        get_revenue(
+            "2026-01-01", "2026-02-01", group_by="total", filters={"country": ["NL"]}
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "DeliveryCountry IN (?)" in sql
+        assert "NL" in params
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_customer_group_filter_adds_custsupplier_join(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
+        get_revenue(
+            "2026-01-01",
+            "2026-02-01",
+            group_by="total",
+            filters={"customer_group": ["G2"]},
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer" in sql
+        assert "cs.CustSuppGroup IN (?)" in sql
+        assert "G2" in params
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_make_filter_ignored_for_non_line_level_group_by(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
+        get_revenue(
+            "2026-01-01", "2026-02-01", group_by="total", filters={"make": ["MAHLE"]}
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "Make IN" not in sql
+        assert params == ("20260101", "20260201")
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_make_filter_applies_on_make_group_by(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"Make": "MAHLE", "amount": 10.0}]
+        get_revenue(
+            "2026-01-01", "2026-02-01", group_by="make", filters={"make": ["MAHLE"]}
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "p.Make IN (?)" in sql
+        assert "MAHLE" in params
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_filters_none_regression_matches_baseline_sql(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
+        get_revenue("2026-01-01", "2026-02-01", group_by="total", filters=None)
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert sql == (
+            "SELECT SUM(LineTotal) AS total_amount, COUNT(*) AS invoice_count "
+            "FROM SALESINVOICE WHERE InvoiceDate >= ? AND InvoiceDate < ?"
+        )
+        assert params == ("20260101", "20260201")
+
+
 class TestGetRevenueByBusinessUnit:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_returns_business_unit_breakdown(self, mock_execute):
@@ -419,6 +491,40 @@ class TestGetTopCustomers:
         assert result["data"] == []
         assert "date" in result["error"].lower()
         mock_execute.assert_not_called()
+
+
+class TestGetTopCustomersFilters:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_country_filter(self, mock_execute):
+        from admcms_mcp.tools import get_top_customers
+
+        mock_execute.return_value = []
+        get_top_customers("2026-01-01", "2026-02-01", filters={"country": ["NL"]})
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "si.DeliveryCountry IN (?)" in sql
+        assert "NL" in params
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_filters_none_regression_matches_baseline_sql(self, mock_execute):
+        from admcms_mcp.tools import get_top_customers
+
+        mock_execute.return_value = []
+        get_top_customers("2026-01-01", "2026-02-01", limit=5, filters=None)
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert sql == (
+            "SELECT TOP (5) cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup, "
+            "COUNT(DISTINCT si.Invoicenr) AS invoice_count, "
+            "SUM(si.LineTotal) AS total_amount "
+            "FROM SALESINVOICE si "
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+            "AND cs.CustSuppType = '1' "
+            "GROUP BY cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup "
+            "ORDER BY total_amount DESC"
+        )
+        assert params == ("20260101", "20260201")
 
 
 class TestGetShippingSummary:
@@ -924,6 +1030,58 @@ class TestGetMarginReport:
         mock_fetch.assert_not_called()
 
 
+class TestGetMarginReportFilters:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_business_unit_filter_maps_to_g_codes(self, mock_execute):
+        from admcms_mcp.tools import get_margin_report
+
+        mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
+        get_margin_report(
+            "2026-01-01",
+            "2026-02-01",
+            group_by="total",
+            filters={"business_unit": ["B2B"]},
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer" in sql
+        assert "cs.CustSuppGroup IN (?,?,?,?,?)" in sql
+        assert set(params[2:]) == {"G2", "G3", "G4", "G5", "G6"}
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_country_filter_on_total(self, mock_execute):
+        from admcms_mcp.tools import get_margin_report
+
+        mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
+        get_margin_report(
+            "2026-01-01",
+            "2026-02-01",
+            group_by="total",
+            filters={"country": ["NL", "BE"]},
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "si.DeliveryCountry IN (?,?)" in sql
+        assert params[-2:] == ("NL", "BE")
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_filters_none_regression_matches_baseline_sql(self, mock_execute):
+        from admcms_mcp.tools import get_margin_report
+
+        mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
+        get_margin_report("2026-01-01", "2026-02-01", group_by="total", filters=None)
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert sql == (
+            "SELECT SUM(sil.InvoiceAmountHC) AS turnover, "
+            "SUM(sil.CostAmountBookedHC) AS cost "
+            "FROM SalesinvoiceLines sil JOIN Salesinvoice si "
+            "ON si.Invoicenr = sil.Invoicenr WHERE si.InvoiceDate >= ? "
+            "AND si.InvoiceDate < ?"
+        )
+        assert params == ("20260101", "20260201")
+
+
 class TestGetKpiSummary:
     @patch("admcms_mcp.tools._fetch_kpi_block")
     def test_basic_without_ly(self, mock_fetch):
@@ -987,6 +1145,45 @@ class TestGetKpiSummary:
         assert row["turnover_delta"] == 200.0
         assert abs(row["turnover_delta_pct"] - 20.0) < 0.001
         assert row["ordering_customers_delta"] == 2
+
+
+class TestGetKpiSummaryFilters:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_country_filter_applies_to_both_queries(self, mock_execute):
+        from admcms_mcp.tools import get_kpi_summary
+
+        mock_execute.return_value = [{}]
+        get_kpi_summary(
+            "2026-01-01", "2026-02-01", include_ly=False, filters={"country": ["NL"]}
+        )
+        header_sql = mock_execute.call_args_list[0][0][0]
+        header_params = mock_execute.call_args_list[0][0][1]
+        lines_sql = mock_execute.call_args_list[1][0][0]
+        lines_params = mock_execute.call_args_list[1][0][1]
+        assert "DeliveryCountry IN (?)" in header_sql
+        assert "NL" in header_params
+        assert "inv.DeliveryCountry IN (?)" in lines_sql
+        assert "NL" in lines_params
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_filters_none_regression_matches_baseline_sql(self, mock_execute):
+        from admcms_mcp.tools import get_kpi_summary
+
+        mock_execute.return_value = [{}]
+        get_kpi_summary("2026-01-01", "2026-02-01", include_ly=False, filters=None)
+        header_sql = mock_execute.call_args_list[0][0][0]
+        header_params = mock_execute.call_args_list[0][0][1]
+        assert header_sql == (
+            "SELECT SUM(LineTotal) AS turnover, "
+            "SUM(LineTotal + ShipCost) AS turnover_incl_shipping, "
+            "COUNT(DISTINCT Invoicenr) AS invoice_count, "
+            "COUNT(DISTINCT Customer) AS ordering_customers, "
+            "SUM(ShipCost) AS shipping_revenue, "
+            "SUM(ShipCostCalculated) AS shipping_cost "
+            "FROM Salesinvoice "
+            "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
+        )
+        assert header_params == ("20260101", "20260201")
 
 
 class TestGetCreditNoteAnalysis:
@@ -1102,6 +1299,43 @@ class TestGetDiscountAnalysis:
         mock_fetch.assert_not_called()
 
 
+class TestGetDiscountAnalysisFilters:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_make_filter_adds_product_join(self, mock_execute):
+        from admcms_mcp.tools import get_discount_analysis
+
+        mock_execute.return_value = []
+        get_discount_analysis(
+            "2026-04-01", "2026-05-01", group_by="segment", filters={"make": ["MAHLE"]}
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "JOIN PRODUCT p ON p.Productcode = sil.Productcode" in sql
+        assert "p.Make IN (?)" in sql
+        assert "MAHLE" in params
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_filters_none_regression_matches_baseline_sql(self, mock_execute):
+        from admcms_mcp.tools import get_discount_analysis
+
+        mock_execute.return_value = []
+        get_discount_analysis("2026-04-01", "2026-05-01", group_by="total", filters=None)
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert sql == (
+            "SELECT COUNT(*) AS line_count, "
+            "SUM(sil.InvoiceAmountHC) AS net_turnover, "
+            "SUM(sil.DiscountAmount) AS total_discount, "
+            "AVG(sil.DiscountAmount) AS avg_discount "
+            "FROM SalesinvoiceLines sil JOIN Salesinvoice si "
+            "ON si.Invoicenr = sil.Invoicenr "
+            "WHERE si.InvoiceType = '0' "
+            "AND si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+            "AND sil.DiscountAmount > 0"
+        )
+        assert params == ("20260401", "20260501")
+
+
 class TestGetOrderOriginMix:
     @patch("admcms_mcp.tools._fetch_order_origin")
     def test_returns_mix_with_pct(self, mock_fetch):
@@ -1142,6 +1376,43 @@ class TestGetOrderOriginMix:
         assert row["line_count_ly"] == 800
         assert row["delta_line_count"] == 200
         assert row["delta_pct"] == 25.0
+
+
+class TestGetOrderOriginMixFilters:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_business_unit_filter_adds_custsupplier_join(self, mock_execute):
+        from admcms_mcp.tools import get_order_origin_mix
+
+        mock_execute.return_value = []
+        get_order_origin_mix(
+            "2026-04-01", "2026-05-01", filters={"business_unit": ["B2C"]}
+        )
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer" in sql
+        assert "cs.CustSuppGroup IN (?)" in sql
+        assert "ND" in params
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_filters_none_regression_matches_baseline_sql(self, mock_execute):
+        from admcms_mcp.tools import get_order_origin_mix
+
+        mock_execute.return_value = []
+        get_order_origin_mix("2026-04-01", "2026-05-01", filters=None)
+        sql = mock_execute.call_args[0][0]
+        params = mock_execute.call_args[0][1]
+        assert sql == (
+            "SELECT sil.OrderOrigin, "
+            "COUNT(*) AS line_count, "
+            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count, "
+            "SUM(sil.InvoiceAmountHC) AS total_amount "
+            "FROM SalesinvoiceLines sil "
+            "JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
+            "WHERE si.InvoiceType = '0' "
+            "AND si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+            "GROUP BY sil.OrderOrigin ORDER BY line_count DESC"
+        )
+        assert params == ("20260401", "20260501")
 
 
 class TestGetDeadStockValidation:
@@ -1316,4 +1587,53 @@ class TestGetDeadStockErrorHandling:
         result = get_dead_stock()
         assert result["data"] == []
         assert result["error"] is not None
+        assert "DB down" in result["error"]
+
+
+class TestGetFilterOptions:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_returns_five_keys_with_distinct_values(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}, {"CustSuppGroup": "G2"}],
+            [{"DeliveryCountry": "NL"}, {"DeliveryCountry": "BE"}],
+            [{"Make": "MAHLE"}],
+            [{"Productgroup": "HOD"}],
+        ]
+        result = get_filter_options()
+        assert set(result.keys()) == {
+            "customer_group",
+            "business_unit",
+            "country",
+            "make",
+            "productgroup",
+        }
+        assert result["customer_group"] == ["ND", "G2"]
+        assert result["business_unit"] == ["B2C", "B2B", "IC"]
+        assert result["country"] == ["NL", "BE"]
+        assert result["make"] == ["MAHLE"]
+        assert result["productgroup"] == ["HOD"]
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_customer_group_query_scopes_to_real_customers(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.return_value = []
+        get_filter_options()
+        cg_sql = mock_execute.call_args_list[0][0][0]
+        assert "CUSTSUPPLIER" in cg_sql
+        assert "CustSuppType = '1'" in cg_sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_exception_returns_defaults_plus_error(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.side_effect = RuntimeError("DB down")
+        result = get_filter_options()
+        assert result["customer_group"] == []
+        assert result["business_unit"] == ["B2C", "B2B", "IC"]
+        assert result["country"] == []
+        assert result["make"] == []
+        assert result["productgroup"] == []
         assert "DB down" in result["error"]
