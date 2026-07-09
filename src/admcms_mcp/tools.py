@@ -155,30 +155,50 @@ def _fetch_revenue(
 ) -> list[dict[str, Any]]:
     """Run the revenue SQL for a given date range + group_by. No LY merging.
 
-    Turnover is always computed at LINE grain (SUM(sil.InvoiceAmountHC) over
-    SalesinvoiceLines JOIN Salesinvoice) so Supplier #81 (VDM PART) dropship
-    lines can be excluded via `sil.PurchasedAt <> 81` — header-level LineTotal
-    has no PurchasedAt column. Verified: header LineTotal total == sum of
-    line InvoiceAmountHC, so only #81 drops out of the total.
+    Turnover uses SALESINVOICE.LineTotal (ex-VAT, home currency) at HEADER
+    grain for total/month/country/customer — fast, index-friendly. For
+    make/productgroup (line-level breakdowns that join PRODUCT) it uses
+    SALESINVOICELINES.InvoiceAmountHC excluding Supplier #81
+    (`sil.PurchasedAt <> 81`). Header-level LineTotal has no PurchasedAt, so
+    the header groupings do NOT exclude #81 — a deliberate performance
+    trade-off (a full line-grain aggregate over a 12-month range takes minutes
+    and starves the shared DB connection). Margin/detail views exclude #81.
 
     `filters` (optional, additive): country works on every group_by
     (si.DeliveryCountry); customer_group/business_unit add a CUSTSUPPLIER
     join (cs.CustSuppType='1', customers only) when not already present;
-    make/productgroup only apply when group_by is itself "make"/"productgroup"
-    (the only variants that join PRODUCT). Unsupported dim/group_by
-    combinations are ignored.
+    make/productgroup only apply when group_by is itself "make"/"productgroup".
 
     `exclude_credits`: when True, adds `AND si.InvoiceType = '0'` (regular
     invoices only). Default False = current behaviour (net, credits included).
     """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
-    base_where = "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
-    if exclude_credits:
-        base_where += " AND si.InvoiceType = '0'"
     params = (start_c8, end_c8)
-    base_from = "FROM SALESINVOICELINES sil JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
     needs_cs = _wants_cs(filters)
+    credits = " AND si.InvoiceType = '0'" if exclude_credits else ""
+
+    # make/productgroup: line grain (join PRODUCT), exclude Supplier #81.
+    if group_by in ("make", "productgroup"):
+        col = "p.Make" if group_by == "make" else "p.Productgroup"
+        join_clause = (
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+            if needs_cs else ""
+        )
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
+        )
+        sql = (
+            f"SELECT {col}, SUM(sil.InvoiceAmountHC) AS amount "
+            "FROM SALESINVOICELINES sil JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
+            "JOIN PRODUCT p ON p.Productcode = sil.Productcode " + join_clause
+            + "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+            + credits + filter_sql + f" GROUP BY {col} ORDER BY amount DESC"
+        )
+        return execute_query_params(sql, params + filter_params, max_rows=500)
+
+    # total/month/country/customer: header grain (fast).
+    base_where = "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?" + credits
     cs_join = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
 
     if group_by == "total":
@@ -187,9 +207,8 @@ def _fetch_revenue(
             filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT SUM(sil.InvoiceAmountHC) AS total_amount, "
-            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count "
-            + base_from + join_clause + base_where + filter_sql
+            "SELECT SUM(si.LineTotal) AS total_amount, COUNT(*) AS invoice_count "
+            "FROM SALESINVOICE si " + join_clause + base_where + filter_sql
         )
         rows = execute_query_params(sql, params + filter_params, max_rows=1)
         return rows or [{"total_amount": 0, "invoice_count": 0}]
@@ -200,11 +219,9 @@ def _fetch_revenue(
             filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT SUBSTRING(si.InvoiceDate, 1, 6) AS period, "
-            "SUM(sil.InvoiceAmountHC) AS amount "
-            + base_from + join_clause + base_where + filter_sql + " "
-            "GROUP BY SUBSTRING(si.InvoiceDate, 1, 6) "
-            "ORDER BY period"
+            "SELECT SUBSTRING(si.InvoiceDate, 1, 6) AS period, SUM(si.LineTotal) AS amount "
+            "FROM SALESINVOICE si " + join_clause + base_where + filter_sql + " "
+            "GROUP BY SUBSTRING(si.InvoiceDate, 1, 6) ORDER BY period"
         )
         params = params + filter_params
     elif group_by == "country":
@@ -213,41 +230,9 @@ def _fetch_revenue(
             filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT si.DeliveryCountry, SUM(sil.InvoiceAmountHC) AS amount "
-            + base_from + join_clause + base_where + filter_sql + " "
+            "SELECT si.DeliveryCountry, SUM(si.LineTotal) AS amount "
+            "FROM SALESINVOICE si " + join_clause + base_where + filter_sql + " "
             "GROUP BY si.DeliveryCountry ORDER BY amount DESC"
-        )
-        params = params + filter_params
-    elif group_by == "make":
-        join_clause = cs_join if needs_cs else ""
-        filter_sql, filter_params = build_filter_where(
-            filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
-        )
-        sql = (
-            "SELECT p.Make, SUM(sil.InvoiceAmountHC) AS amount "
-            + base_from
-            + "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-            + join_clause
-            + base_where
-            + filter_sql
-            + " "
-            "GROUP BY p.Make ORDER BY amount DESC"
-        )
-        params = params + filter_params
-    elif group_by == "productgroup":
-        join_clause = cs_join if needs_cs else ""
-        filter_sql, filter_params = build_filter_where(
-            filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
-        )
-        sql = (
-            "SELECT p.Productgroup, SUM(sil.InvoiceAmountHC) AS amount "
-            + base_from
-            + "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-            + join_clause
-            + base_where
-            + filter_sql
-            + " "
-            "GROUP BY p.Productgroup ORDER BY amount DESC"
         )
         params = params + filter_params
     else:  # customer
@@ -255,8 +240,8 @@ def _fetch_revenue(
             filters, cs="cs", country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT cs.Searchname, SUM(sil.InvoiceAmountHC) AS amount "
-            + base_from + cs_join + base_where + filter_sql + " "
+            "SELECT cs.Searchname, SUM(si.LineTotal) AS amount "
+            "FROM SALESINVOICE si " + cs_join + base_where + filter_sql + " "
             "GROUP BY cs.Searchname ORDER BY amount DESC"
         )
         params = params + filter_params
@@ -790,9 +775,12 @@ def _fetch_kpi_block(
     end_c8 = admcms_date(end_date)
     params = (start_c8, end_c8)
     needs_cs = _wants_cs(filters)
-    header_credits_clause = " AND InvoiceType = '0'" if exclude_credits else ""
-    lines_credits_clause = " AND inv.InvoiceType = '0'" if exclude_credits else ""
+    credits = " AND InvoiceType = '0'" if exclude_credits else ""
 
+    # HEADER-only (fast). Turnover = SUM(LineTotal); line_count via LastLineNumber
+    # (a full SalesinvoiceLines scan over a 12-month range takes minutes and would
+    # starve the shared DB connection). item_count is a fast-path proxy (line_count);
+    # exact piece counts need a line-level tool.
     header_join = (
         "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer AND cs.CustSuppType = '1' "
         if needs_cs else ""
@@ -802,14 +790,17 @@ def _fetch_kpi_block(
     )
     header_sql = (
         "SELECT "
+        "SUM(LineTotal) AS turnover, "
+        "SUM(LineTotal + ShipCost) AS turnover_incl_shipping, "
         "COUNT(DISTINCT Invoicenr) AS invoice_count, "
         "COUNT(DISTINCT Customer) AS ordering_customers, "
         "SUM(ShipCost) AS shipping_revenue, "
-        "SUM(ShipCostCalculated) AS shipping_cost "
+        "SUM(ShipCostCalculated) AS shipping_cost, "
+        "SUM(LastLineNumber) AS line_count "
         "FROM Salesinvoice "
         f"{header_join}"
         "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
-        + header_credits_clause
+        + credits
         + header_filter_sql
     )
     header_rows = execute_query_params(
@@ -817,36 +808,15 @@ def _fetch_kpi_block(
     )
     h = header_rows[0] if header_rows else {}
 
-    lines_join = (
-        "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = inv.Customer AND cs.CustSuppType = '1' "
-        if needs_cs else ""
-    )
-    lines_filter_sql, lines_filter_params = build_filter_where(
-        filters, cs="cs" if needs_cs else None, country_col="inv.DeliveryCountry"
-    )
-    lines_sql = (
-        "SELECT COUNT(*) AS line_count, SUM(ThisIinvoice) AS item_count, "
-        "SUM(sil.InvoiceAmountHC) AS turnover "
-        "FROM SalesinvoiceLines sil "
-        "JOIN Salesinvoice inv ON inv.Invoicenr = sil.Invoicenr "
-        f"{lines_join}"
-        "WHERE inv.InvoiceDate >= ? AND inv.InvoiceDate < ? AND sil.PurchasedAt <> 81"
-        + lines_credits_clause
-        + lines_filter_sql
-    )
-    line_rows = execute_query_params(
-        lines_sql, params + lines_filter_params, max_rows=1
-    )
-    ln = line_rows[0] if line_rows else {}
-
-    turnover = float(ln.get("turnover") or 0)
+    turnover = float(h.get("turnover") or 0)
     invoice_count = int(h.get("invoice_count") or 0)
     shipping_rev = float(h.get("shipping_revenue") or 0)
     shipping_cost = float(h.get("shipping_cost") or 0)
     shipping_margin = shipping_rev - shipping_cost
+    line_count = int(h.get("line_count") or 0)
     return {
         "turnover": turnover,
-        "turnover_incl_shipping": turnover + shipping_rev,
+        "turnover_incl_shipping": float(h.get("turnover_incl_shipping") or 0),
         "invoice_count": invoice_count,
         "ordering_customers": int(h.get("ordering_customers") or 0),
         "aov": (turnover / invoice_count) if invoice_count else 0.0,
@@ -854,8 +824,8 @@ def _fetch_kpi_block(
         "shipping_cost": shipping_cost,
         "shipping_margin": shipping_margin,
         "shipping_margin_pct": _pct(shipping_margin, shipping_rev),
-        "line_count": int(ln.get("line_count") or 0),
-        "item_count": int(ln.get("item_count") or 0),
+        "line_count": line_count,
+        "item_count": line_count,
     }
 
 
@@ -973,12 +943,11 @@ def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict[str, An
 
         sql = (
             f"SELECT {_BUSINESS_UNIT_CASE} AS business_unit, "
-            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count, "
-            "SUM(sil.InvoiceAmountHC) AS total_amount "
-            "FROM SALESINVOICELINES sil "
-            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
+            "COUNT(*) AS invoice_count, "
+            "SUM(si.LineTotal) AS total_amount "
+            "FROM SALESINVOICE si "
             "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81 "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
             f"GROUP BY {_BUSINESS_UNIT_CASE} "
             "ORDER BY total_amount DESC"
         )
@@ -1125,12 +1094,11 @@ def get_top_customers(
         sql = (
             f"SELECT TOP ({effective_limit}) cs.CustSuppnr, cs.Searchname, "
             "cs.CustSuppGroup, "
-            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count, "
-            "SUM(sil.InvoiceAmountHC) AS total_amount "
-            "FROM SALESINVOICELINES sil "
-            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
+            "COUNT(DISTINCT si.Invoicenr) AS invoice_count, "
+            "SUM(si.LineTotal) AS total_amount "
+            "FROM SALESINVOICE si "
             "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?"
             + filter_sql + " "
             "GROUP BY cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup "
             "ORDER BY total_amount DESC"

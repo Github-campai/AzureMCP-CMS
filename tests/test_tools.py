@@ -369,11 +369,9 @@ class TestGetRevenueFilters:
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
         assert sql == (
-            "SELECT SUM(sil.InvoiceAmountHC) AS total_amount, "
-            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count "
-            "FROM SALESINVOICELINES sil JOIN SALESINVOICE si "
-            "ON si.Invoicenr = sil.Invoicenr "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+            "SELECT SUM(si.LineTotal) AS total_amount, COUNT(*) AS invoice_count "
+            "FROM SALESINVOICE si "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?"
         )
         assert params == ("20260101", "20260201")
 
@@ -418,9 +416,10 @@ class TestGetRevenueByBusinessUnit:
         get_revenue_by_business_unit("2026-01-01", "2026-02-01")
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
-        assert "SALESINVOICELINES" in sql.upper()
-        assert "SUM(sil.InvoiceAmountHC)" in sql
-        assert "sil.PurchasedAt <> 81" in sql
+        # header grain (fast) — SUM(LineTotal), CustSuppType='1' guard
+        assert "SUM(si.LineTotal)" in sql
+        assert "FROM SALESINVOICE si" in sql
+        assert "cs.CustSuppType = '1'" in sql
         assert "InvoiceDate" in sql
         assert params == ("20260101", "20260201")
 
@@ -522,12 +521,11 @@ class TestGetTopCustomersFilters:
         params = mock_execute.call_args[0][1]
         assert sql == (
             "SELECT TOP (5) cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup, "
-            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count, "
-            "SUM(sil.InvoiceAmountHC) AS total_amount "
-            "FROM SALESINVOICELINES sil "
-            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
+            "COUNT(DISTINCT si.Invoicenr) AS invoice_count, "
+            "SUM(si.LineTotal) AS total_amount "
+            "FROM SALESINVOICE si "
             "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81 "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
             "GROUP BY cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup "
             "ORDER BY total_amount DESC"
         )
@@ -1163,14 +1161,11 @@ class TestGetKpiSummaryFilters:
         get_kpi_summary(
             "2026-01-01", "2026-02-01", include_ly=False, filters={"country": ["NL"]}
         )
+        # header-only (fast) — single query now
         header_sql = mock_execute.call_args_list[0][0][0]
         header_params = mock_execute.call_args_list[0][0][1]
-        lines_sql = mock_execute.call_args_list[1][0][0]
-        lines_params = mock_execute.call_args_list[1][0][1]
         assert "DeliveryCountry IN (?)" in header_sql
         assert "NL" in header_params
-        assert "inv.DeliveryCountry IN (?)" in lines_sql
-        assert "NL" in lines_params
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_filters_none_regression_matches_baseline_sql(self, mock_execute):
@@ -1181,25 +1176,19 @@ class TestGetKpiSummaryFilters:
         header_sql = mock_execute.call_args_list[0][0][0]
         header_params = mock_execute.call_args_list[0][0][1]
         assert header_sql == (
-            "SELECT COUNT(DISTINCT Invoicenr) AS invoice_count, "
+            "SELECT SUM(LineTotal) AS turnover, "
+            "SUM(LineTotal + ShipCost) AS turnover_incl_shipping, "
+            "COUNT(DISTINCT Invoicenr) AS invoice_count, "
             "COUNT(DISTINCT Customer) AS ordering_customers, "
             "SUM(ShipCost) AS shipping_revenue, "
-            "SUM(ShipCostCalculated) AS shipping_cost "
+            "SUM(ShipCostCalculated) AS shipping_cost, "
+            "SUM(LastLineNumber) AS line_count "
             "FROM Salesinvoice "
             "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
         )
         assert header_params == ("20260101", "20260201")
-
-        lines_sql = mock_execute.call_args_list[1][0][0]
-        lines_params = mock_execute.call_args_list[1][0][1]
-        assert lines_sql == (
-            "SELECT COUNT(*) AS line_count, SUM(ThisIinvoice) AS item_count, "
-            "SUM(sil.InvoiceAmountHC) AS turnover "
-            "FROM SalesinvoiceLines sil "
-            "JOIN Salesinvoice inv ON inv.Invoicenr = sil.Invoicenr "
-            "WHERE inv.InvoiceDate >= ? AND inv.InvoiceDate < ? AND sil.PurchasedAt <> 81"
-        )
-        assert lines_params == ("20260101", "20260201")
+        # get_kpi_summary is now header-only (one query, no SalesinvoiceLines scan)
+        assert mock_execute.call_count == 1
 
 
 class TestGetCreditNoteAnalysis:
@@ -1738,14 +1727,22 @@ class TestGetFilterOptions:
 
 class TestLineGrainTurnoverExcludesSupplier81:
     @patch("admcms_mcp.tools.execute_query_params")
-    def test_get_revenue_default_sql_excludes_supplier_81(self, mock_execute):
+    def test_get_revenue_make_excludes_81_total_is_header_grain(self, mock_execute):
         from admcms_mcp.tools import get_revenue
 
+        # make = line grain → excludes #81
+        mock_execute.return_value = [{"Make": "DU", "amount": 100.0}]
+        get_revenue("2026-01-01", "2026-02-01", group_by="make", filters=None)
+        make_sql = mock_execute.call_args[0][0]
+        assert "sil.PurchasedAt <> 81" in make_sql
+        assert "SUM(sil.InvoiceAmountHC)" in make_sql
+
+        # total = header grain (fast) → LineTotal, no line scan / no #81 clause
         mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
         get_revenue("2026-01-01", "2026-02-01", group_by="total", filters=None)
-        sql = mock_execute.call_args[0][0]
-        assert "sil.PurchasedAt <> 81" in sql
-        assert "SUM(sil.InvoiceAmountHC)" in sql
+        total_sql = mock_execute.call_args[0][0]
+        assert "SUM(si.LineTotal)" in total_sql
+        assert "PurchasedAt" not in total_sql
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_fetch_margin_sql_excludes_supplier_81(self, mock_execute):
@@ -1893,9 +1890,7 @@ class TestExcludeCreditsFlag:
             "2026-01-01", "2026-02-01", include_ly=False, exclude_credits=True
         )
         header_sql = mock_execute.call_args_list[0][0][0]
-        lines_sql = mock_execute.call_args_list[1][0][0]
         assert "InvoiceType = '0'" in header_sql
-        assert "inv.InvoiceType = '0'" in lines_sql
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_get_kpi_summary_exclude_credits_false_default_omits_filter(
@@ -1906,6 +1901,4 @@ class TestExcludeCreditsFlag:
         mock_execute.return_value = [{}]
         get_kpi_summary("2026-01-01", "2026-02-01", include_ly=False)
         header_sql = mock_execute.call_args_list[0][0][0]
-        lines_sql = mock_execute.call_args_list[1][0][0]
         assert "InvoiceType" not in header_sql
-        assert "InvoiceType" not in lines_sql
