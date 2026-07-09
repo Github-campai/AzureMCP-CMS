@@ -464,8 +464,9 @@ def _build_mcp_server() -> FastMCP:
         Args:
             start_date: ISO YYYY-MM-DD, inclusive.
             end_date: ISO YYYY-MM-DD, exclusive.
-            group_by: "total" (default), "country", "make", "productgroup",
-                "customer", "segment" (B2C/B2B/IC/Overig via CustSuppGroup).
+            group_by: "total" (default), "month", "country", "make",
+                "productgroup", "customer", "segment" (B2C/B2B/IC/Overig via
+                CustSuppGroup).
             include_ly: add turnover_ly, margin_ly, delta_margin per row.
             filters: optional dict restricting results to specific dimension
                 values. Supported keys (any group_by): country, customer_group,

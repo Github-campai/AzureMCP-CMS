@@ -435,6 +435,7 @@ def get_revenue(
 
 _VALID_MARGIN_GROUP_BY = (
     "total",
+    "month",
     "country",
     "make",
     "productgroup",
@@ -506,6 +507,14 @@ def _fetch_margin(
         sql = f"SELECT {amounts} {base_from}{extra_join}{where}{filter_sql}"
         return execute_query_params(sql, params, max_rows=1) or [{"turnover": 0, "cost": 0}]
 
+    if group_by == "month":
+        sql = (
+            f"SELECT SUBSTRING(si.InvoiceDate, 1, 6) AS period, {amounts} "
+            f"{base_from}{extra_join}{where}{filter_sql} "
+            "GROUP BY SUBSTRING(si.InvoiceDate, 1, 6) ORDER BY period"
+        )
+        return execute_query_params(sql, params, max_rows=500)
+
     if group_by == "country":
         sql = (
             f"SELECT si.DeliveryCountry, {amounts} "
@@ -546,6 +555,7 @@ def _fetch_margin(
 
 
 _MARGIN_KEY_FIELD = {
+    "month": "period",
     "country": "DeliveryCountry",
     "make": "Make",
     "productgroup": "Productgroup",

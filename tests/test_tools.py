@@ -1034,6 +1034,23 @@ class TestGetMarginReport:
         assert "date" in result["error"].lower()
         mock_fetch.assert_not_called()
 
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_group_by_month_returns_period_rows_with_margin(self, mock_execute):
+        from admcms_mcp.tools import get_margin_report
+
+        mock_execute.return_value = [
+            {"period": "202601", "turnover": 1000.0, "cost": 600.0},
+            {"period": "202602", "turnover": 500.0, "cost": 300.0},
+        ]
+        res = get_margin_report("2026-01-01", "2026-03-01", group_by="month")
+        assert res["error"] is None
+        sql = mock_execute.call_args[0][0]
+        assert "SUBSTRING(si.InvoiceDate, 1, 6) AS period" in sql
+        assert "sil.PurchasedAt <> 81" in sql
+        assert res["data"][0]["period"] == "202601"
+        assert res["data"][0]["margin"] == 400.0
+        assert round(res["data"][0]["margin_pct"], 1) == 40.0
+
 
 class TestGetMarginReportFilters:
     @patch("admcms_mcp.tools.execute_query_params")
