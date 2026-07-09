@@ -557,7 +557,9 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_country_segment_matrix(start_date: str, end_date: str) -> dict:
+    def get_country_segment_matrix(
+        start_date: str, end_date: str, filters: dict | None = None
+    ) -> dict:
         """Country x Segment matrix: turnover, margin (+%) and shipping (+cost/margin/%).
 
         Backs the PBI page "Turnover per Country and Segment". Turnover/margin are
@@ -568,6 +570,8 @@ def _build_mcp_server() -> FastMCP:
         Args:
             start_date: ISO YYYY-MM-DD, inclusive.
             end_date: ISO YYYY-MM-DD, exclusive.
+            filters: optional dict; country/customer_group/business_unit apply to
+                both queries. make/productgroup are ignored (no PRODUCT join).
 
         Returns: {data: [{country, segment, turnover, margin, margin_pct,
                   shipping, shipping_cost, shipping_margin, shipping_margin_pct}, ...],
@@ -575,8 +579,8 @@ def _build_mcp_server() -> FastMCP:
         """
         return _audited(
             "get_country_segment_matrix",
-            {"start_date": start_date, "end_date": end_date},
-            lambda: _get_country_segment_matrix(start_date, end_date),
+            {"start_date": start_date, "end_date": end_date, "filters": filters},
+            lambda: _get_country_segment_matrix(start_date, end_date, filters=filters),
         )
 
     @mcp.tool()

@@ -1002,7 +1002,9 @@ def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict[str, An
         return format_response(data=[], error=f"Execution error: {e}")
 
 
-def get_country_segment_matrix(start_date: str, end_date: str) -> dict[str, Any]:
+def get_country_segment_matrix(
+    start_date: str, end_date: str, filters: dict | None = None
+) -> dict[str, Any]:
     """Country x Segment matrix of turnover, margin and shipping.
 
     Backs the PBI page "Turnover per Country and Segment". Two deterministic
@@ -1015,12 +1017,20 @@ def get_country_segment_matrix(start_date: str, end_date: str) -> dict[str, Any]
     Segment (B2C/B2B/IC/Overig) is derived from CustSupplier.CustSuppGroup;
     customers only (CustSuppType='1'). Dates are ISO YYYY-MM-DD.
 
+    `filters` (optional, additive): `country`, `customer_group`, `business_unit`
+    apply to both queries (CUSTSUPPLIER already joined). `make`/`productgroup`
+    are ignored (no PRODUCT join here).
+
     Returns rows with: country, segment, turnover, margin, margin_pct,
     shipping, shipping_cost, shipping_margin, shipping_margin_pct.
     """
     try:
         start_c8 = admcms_date(start_date)
         end_c8 = admcms_date(end_date)
+        filter_sql, filter_params = build_filter_where(
+            filters, cs="cs", country_col="si.DeliveryCountry"
+        )
+        params = (start_c8, end_c8) + filter_params
 
         line_sql = (
             f"SELECT si.DeliveryCountry AS country, {_MARGIN_SEGMENT_CASE} AS segment, "
@@ -1028,20 +1038,22 @@ def get_country_segment_matrix(start_date: str, end_date: str) -> dict[str, Any]
             "FROM SalesinvoiceLines sil "
             "JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
             "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81 "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+            + filter_sql + " "
             f"GROUP BY si.DeliveryCountry, {_MARGIN_SEGMENT_CASE}"
         )
-        line_rows = execute_query_params(line_sql, (start_c8, end_c8), max_rows=2000)
+        line_rows = execute_query_params(line_sql, params, max_rows=2000)
 
         ship_sql = (
             f"SELECT si.DeliveryCountry AS country, {_MARGIN_SEGMENT_CASE} AS segment, "
             "SUM(si.ShipCost) AS shipping, SUM(si.ShipCostCalculated) AS shipping_cost "
             "FROM Salesinvoice si "
             "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?"
+            + filter_sql + " "
             f"GROUP BY si.DeliveryCountry, {_MARGIN_SEGMENT_CASE}"
         )
-        ship_rows = execute_query_params(ship_sql, (start_c8, end_c8), max_rows=2000)
+        ship_rows = execute_query_params(ship_sql, params, max_rows=2000)
 
         ship_idx = {(r.get("country"), r.get("segment")): r for r in ship_rows}
         rows: list[dict[str, Any]] = []
