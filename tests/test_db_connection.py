@@ -2,18 +2,34 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import admcms_mcp.db as _db
 from admcms_mcp.db import execute_query, get_schema_columns
 
 
+@pytest.fixture(autouse=True)
+def _clear_query_cache():
+    # The in-process result cache would otherwise leak across cases (a repeated
+    # (sql, params) would return a cached list and skip the mocked cursor).
+    _db._query_cache.clear()
+    yield
+    _db._query_cache.clear()
+
+
+def _mock_borrow(mock_borrow, mock_conn):
+    """Wire a patched _borrow() context manager to yield `mock_conn`."""
+    mock_borrow.return_value.__enter__.return_value = mock_conn
+    mock_borrow.return_value.__exit__.return_value = False
+
+
 class TestExecuteQuery:
-    @patch("admcms_mcp.db._get_connection")
-    def test_execute_query_returns_rows_as_dicts(self, mock_get_conn):
+    @patch("admcms_mcp.db._borrow")
+    def test_execute_query_returns_rows_as_dicts(self, mock_borrow):
         mock_cursor = MagicMock()
         mock_cursor.description = [("id", None), ("name", None)]
         mock_cursor.fetchmany.return_value = [(1, "foo"), (2, "bar")]
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
-        mock_get_conn.return_value = mock_conn
+        _mock_borrow(mock_borrow, mock_conn)
 
         rows = execute_query("SELECT id, name FROM foo", max_rows=10)
 
@@ -21,29 +37,29 @@ class TestExecuteQuery:
         mock_cursor.execute.assert_called_once_with("SELECT id, name FROM foo")
         mock_cursor.fetchmany.assert_called_once_with(10)
 
-    @patch("admcms_mcp.db._get_connection")
-    def test_execute_query_rejects_dangerous_query(self, mock_get_conn):
+    @patch("admcms_mcp.db._borrow")
+    def test_execute_query_rejects_dangerous_query(self, mock_borrow):
         with pytest.raises(ValueError, match="INSERT"):
             execute_query("INSERT INTO foo VALUES (1)")
-        mock_get_conn.assert_not_called()
+        mock_borrow.assert_not_called()
 
-    @patch("admcms_mcp.db._get_connection")
-    def test_execute_query_caps_max_rows_at_500(self, mock_get_conn):
+    @patch("admcms_mcp.db._borrow")
+    def test_execute_query_caps_max_rows_at_500(self, mock_borrow):
         mock_cursor = MagicMock()
         mock_cursor.description = [("id", None)]
         mock_cursor.fetchmany.return_value = []
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
-        mock_get_conn.return_value = mock_conn
+        _mock_borrow(mock_borrow, mock_conn)
 
-        execute_query("SELECT id FROM foo", max_rows=99999)
+        execute_query("SELECT id FROM foo WHERE id = 987654321", max_rows=99999)
 
         mock_cursor.fetchmany.assert_called_once_with(500)
 
 
 class TestGetSchemaColumns:
-    @patch("admcms_mcp.db._get_connection")
-    def test_get_schema_uses_parameterized_query(self, mock_get_conn):
+    @patch("admcms_mcp.db._borrow")
+    def test_get_schema_uses_parameterized_query(self, mock_borrow):
         mock_cursor = MagicMock()
         mock_cursor.description = [
             ("COLUMN_NAME", None),
@@ -54,7 +70,7 @@ class TestGetSchemaColumns:
         mock_cursor.fetchall.return_value = [("id", "int", None, "NO")]
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
-        mock_get_conn.return_value = mock_conn
+        _mock_borrow(mock_borrow, mock_conn)
 
         result = get_schema_columns("ARTIKEL")
 
@@ -70,14 +86,14 @@ class TestGetSchemaColumns:
             }
         ]
 
-    @patch("admcms_mcp.db._get_connection")
-    def test_get_schema_injection_attempt_does_not_inject(self, mock_get_conn):
+    @patch("admcms_mcp.db._borrow")
+    def test_get_schema_injection_attempt_does_not_inject(self, mock_borrow):
         mock_cursor = MagicMock()
         mock_cursor.description = [("COLUMN_NAME", None)]
         mock_cursor.fetchall.return_value = []
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
-        mock_get_conn.return_value = mock_conn
+        _mock_borrow(mock_borrow, mock_conn)
 
         get_schema_columns("foo'; DROP TABLE bar--")
 
@@ -87,8 +103,8 @@ class TestGetSchemaColumns:
 
 
 class TestExecuteQueryParams:
-    @patch("admcms_mcp.db._get_connection")
-    def test_passes_params_to_cursor(self, mock_get_conn):
+    @patch("admcms_mcp.db._borrow")
+    def test_passes_params_to_cursor(self, mock_borrow):
         from admcms_mcp.db import execute_query_params
 
         mock_cursor = MagicMock()
@@ -96,20 +112,22 @@ class TestExecuteQueryParams:
         mock_cursor.fetchmany.return_value = [(42,)]
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
-        mock_get_conn.return_value = mock_conn
+        _mock_borrow(mock_borrow, mock_conn)
 
-        rows = execute_query_params("SELECT id FROM t WHERE x = ?", ("abc",), max_rows=5)
+        rows = execute_query_params(
+            "SELECT id FROM t WHERE x = ?", ("abc",), max_rows=5
+        )
 
-        mock_cursor.execute.assert_called_once_with("SELECT id FROM t WHERE x = ?", ("abc",))
+        mock_cursor.execute.assert_called_once_with(
+            "SELECT id FROM t WHERE x = ?", ("abc",)
+        )
         mock_cursor.fetchmany.assert_called_once_with(5)
         assert rows == [{"id": 42}]
 
-    @patch("admcms_mcp.db._get_connection")
-    def test_rejects_dangerous_query(self, mock_get_conn):
-        import pytest
-
+    @patch("admcms_mcp.db._borrow")
+    def test_rejects_dangerous_query(self, mock_borrow):
         from admcms_mcp.db import execute_query_params
 
         with pytest.raises(ValueError, match="INSERT"):
             execute_query_params("INSERT INTO t VALUES (?)", ("x",))
-        mock_get_conn.assert_not_called()
+        mock_borrow.assert_not_called()
