@@ -32,11 +32,36 @@ _DANGEROUS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+import time as _time_mod
+
 _MAX_ROWS_HARD_LIMIT = 500
-_QUERY_TIMEOUT_SECONDS = 60
+# Line-grain aggregations over a 12-month range take ~60-75s on this DB; give
+# them room to finish rather than erroring at the ODBC timeout (App Service
+# idle timeout is ~230s, so stay well under that).
+_QUERY_TIMEOUT_SECONDS = 180
 
 _connection: pyodbc.Connection | None = None
 _connection_lock = threading.Lock()
+
+# In-process result cache. Dashboard reads tolerate mild staleness; caching the
+# heavy aggregates means only the FIRST load per (sql, params) pays the cost and
+# every subsequent tile/refresh within the TTL is instant.
+_QUERY_CACHE_TTL_SECONDS = 600
+_query_cache: dict[tuple, tuple[float, list]] = {}
+_query_cache_lock = threading.Lock()
+
+
+def _cache_get(key: tuple) -> list | None:
+    with _query_cache_lock:
+        hit = _query_cache.get(key)
+        if hit is not None and (_time_mod.monotonic() - hit[0]) < _QUERY_CACHE_TTL_SECONDS:
+            return hit[1]
+    return None
+
+
+def _cache_put(key: tuple, result: list) -> None:
+    with _query_cache_lock:
+        _query_cache[key] = (_time_mod.monotonic(), result)
 
 
 def validate_query(sql: str) -> None:
@@ -100,6 +125,11 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
     validate_query(sql)
     effective_rows = min(max(1, max_rows), _MAX_ROWS_HARD_LIMIT)
 
+    cache_key = (sql, None, effective_rows)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     conn = _get_connection()
     cursor = conn.cursor()
     _start = _time.monotonic()
@@ -110,6 +140,7 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
     _audit.record_sql(
         sql, None, int((_time.monotonic() - _start) * 1000), len(result)
     )
+    _cache_put(cache_key, result)
     return result
 
 
@@ -128,6 +159,11 @@ def execute_query_params(
     validate_query(sql)
     effective_rows = min(max(1, max_rows), _MAX_ROWS_HARD_LIMIT)
 
+    cache_key = (sql, params, effective_rows)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     conn = _get_connection()
     cursor = conn.cursor()
     _start = _time.monotonic()
@@ -138,6 +174,7 @@ def execute_query_params(
     _audit.record_sql(
         sql, params, int((_time.monotonic() - _start) * 1000), len(result)
     )
+    _cache_put(cache_key, result)
     return result
 
 
