@@ -147,94 +147,104 @@ _GROUP_KEY_FIELD = {
 
 
 def _fetch_revenue(
-    start_date: str, end_date: str, group_by: str, filters: dict | None = None
+    start_date: str,
+    end_date: str,
+    group_by: str,
+    filters: dict | None = None,
+    exclude_credits: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the revenue SQL for a given date range + group_by. No LY merging.
 
+    Turnover is always computed at LINE grain (SUM(sil.InvoiceAmountHC) over
+    SalesinvoiceLines JOIN Salesinvoice) so Supplier #81 (VDM PART) dropship
+    lines can be excluded via `sil.PurchasedAt <> 81` — header-level LineTotal
+    has no PurchasedAt column. Verified: header LineTotal total == sum of
+    line InvoiceAmountHC, so only #81 drops out of the total.
+
     `filters` (optional, additive): country works on every group_by
-    (Salesinvoice.DeliveryCountry, header-level); customer_group/business_unit
-    add a CUSTSUPPLIER join when not already present; make/productgroup only
-    apply when group_by is itself "make"/"productgroup" (the only variants
-    that join PRODUCT). Unsupported dim/group_by combinations are ignored.
+    (si.DeliveryCountry); customer_group/business_unit add a CUSTSUPPLIER
+    join (cs.CustSuppType='1', customers only) when not already present;
+    make/productgroup only apply when group_by is itself "make"/"productgroup"
+    (the only variants that join PRODUCT). Unsupported dim/group_by
+    combinations are ignored.
+
+    `exclude_credits`: when True, adds `AND si.InvoiceType = '0'` (regular
+    invoices only). Default False = current behaviour (net, credits included).
     """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
-    base_where = "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
+    base_where = "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+    if exclude_credits:
+        base_where += " AND si.InvoiceType = '0'"
     params = (start_c8, end_c8)
+    base_from = "FROM SALESINVOICELINES sil JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
     needs_cs = _wants_cs(filters)
+    cs_join = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
 
     if group_by == "total":
-        from_clause = "FROM SALESINVOICE "
-        if needs_cs:
-            from_clause += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer "
+        join_clause = cs_join if needs_cs else ""
         filter_sql, filter_params = build_filter_where(
-            filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
+            filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT SUM(LineTotal) AS total_amount, "
-            "COUNT(*) AS invoice_count "
-            + from_clause + base_where + filter_sql
+            "SELECT SUM(sil.InvoiceAmountHC) AS total_amount, "
+            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count "
+            + base_from + join_clause + base_where + filter_sql
         )
         rows = execute_query_params(sql, params + filter_params, max_rows=1)
         return rows or [{"total_amount": 0, "invoice_count": 0}]
 
     if group_by == "month":
-        from_clause = "FROM SALESINVOICE "
-        if needs_cs:
-            from_clause += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer "
+        join_clause = cs_join if needs_cs else ""
         filter_sql, filter_params = build_filter_where(
-            filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
+            filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT SUBSTRING(InvoiceDate, 1, 6) AS period, "
-            "SUM(LineTotal) AS amount "
-            + from_clause + base_where + filter_sql + " "
-            "GROUP BY SUBSTRING(InvoiceDate, 1, 6) "
+            "SELECT SUBSTRING(si.InvoiceDate, 1, 6) AS period, "
+            "SUM(sil.InvoiceAmountHC) AS amount "
+            + base_from + join_clause + base_where + filter_sql + " "
+            "GROUP BY SUBSTRING(si.InvoiceDate, 1, 6) "
             "ORDER BY period"
         )
         params = params + filter_params
     elif group_by == "country":
-        from_clause = "FROM SALESINVOICE "
-        if needs_cs:
-            from_clause += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer "
+        join_clause = cs_join if needs_cs else ""
         filter_sql, filter_params = build_filter_where(
-            filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
+            filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT DeliveryCountry, SUM(LineTotal) AS amount "
-            + from_clause + base_where + filter_sql + " "
-            "GROUP BY DeliveryCountry ORDER BY amount DESC"
+            "SELECT si.DeliveryCountry, SUM(sil.InvoiceAmountHC) AS amount "
+            + base_from + join_clause + base_where + filter_sql + " "
+            "GROUP BY si.DeliveryCountry ORDER BY amount DESC"
         )
         params = params + filter_params
     elif group_by == "make":
-        join_clause = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer " if needs_cs else ""
+        join_clause = cs_join if needs_cs else ""
         filter_sql, filter_params = build_filter_where(
             filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
         )
         sql = (
             "SELECT p.Make, SUM(sil.InvoiceAmountHC) AS amount "
-            "FROM SALESINVOICELINES sil "
-            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
-            "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
+            + base_from
+            + "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
             + join_clause
-            + base_where.replace("InvoiceDate", "si.InvoiceDate")
+            + base_where
             + filter_sql
             + " "
             "GROUP BY p.Make ORDER BY amount DESC"
         )
         params = params + filter_params
     elif group_by == "productgroup":
-        join_clause = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer " if needs_cs else ""
+        join_clause = cs_join if needs_cs else ""
         filter_sql, filter_params = build_filter_where(
             filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
         )
         sql = (
             "SELECT p.Productgroup, SUM(sil.InvoiceAmountHC) AS amount "
-            "FROM SALESINVOICELINES sil "
-            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
-            "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
+            + base_from
+            + "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
             + join_clause
-            + base_where.replace("InvoiceDate", "si.InvoiceDate")
+            + base_where
             + filter_sql
             + " "
             "GROUP BY p.Productgroup ORDER BY amount DESC"
@@ -245,12 +255,8 @@ def _fetch_revenue(
             filters, cs="cs", country_col="si.DeliveryCountry"
         )
         sql = (
-            "SELECT cs.Searchname, SUM(si.LineTotal) AS amount "
-            "FROM SALESINVOICE si "
-            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
-            + base_where.replace("InvoiceDate", "si.InvoiceDate")
-            + filter_sql
-            + " "
+            "SELECT cs.Searchname, SUM(sil.InvoiceAmountHC) AS amount "
+            + base_from + cs_join + base_where + filter_sql + " "
             "GROUP BY cs.Searchname ORDER BY amount DESC"
         )
         params = params + filter_params
@@ -290,6 +296,7 @@ def get_revenue(
     group_by: str = "total",
     include_ly: bool = False,
     filters: dict | None = None,
+    exclude_credits: bool = False,
 ) -> dict[str, Any]:
     """Aggregate sales invoice revenue between two dates.
 
@@ -297,16 +304,25 @@ def get_revenue(
     `include_ly`: when True, compute same period exactly 1 year earlier and
     add `amount_ly`, `delta`, `delta_pct` to each row + LY totals to summary.
 
-    Revenue uses SALESINVOICE.LineTotal (ex-VAT, home currency) for header-
-    level groupings (total, month, country, customer). For per-make and
-    per-productgroup breakdowns, SALESINVOICELINES.InvoiceAmountHC is used
-    because LineTotal is not on the line level.
+    Revenue is always computed at LINE grain: SUM(SALESINVOICELINES.
+    InvoiceAmountHC) joined to SALESINVOICE, for every group_by (total,
+    month, country, customer, make, productgroup). This excludes Supplier
+    #81 (VDM PART) dropship lines (`sil.PurchasedAt <> 81`) — a known
+    data-corruption source (verified 2270 lines / EUR99,959 in June) that
+    cannot be filtered at header grain since Salesinvoice.LineTotal has no
+    PurchasedAt column. Header LineTotal total == sum of line
+    InvoiceAmountHC, so only #81 drops out versus the old header-based total.
 
     `filters` (optional dict, additive — omitting it leaves behaviour
     unchanged): `country` applies on every group_by; `customer_group` /
-    `business_unit` apply on every group_by (adds a CUSTSUPPLIER join when
-    needed); `make` / `productgroup` only apply when group_by is itself
-    "make" or "productgroup" (the only variants that join PRODUCT).
+    `business_unit` apply on every group_by (adds a CUSTSUPPLIER join,
+    filtered to cs.CustSuppType='1', when needed); `make` / `productgroup`
+    only apply when group_by is itself "make" or "productgroup" (the only
+    variants that join PRODUCT).
+
+    `exclude_credits`: when True, restricts to regular invoices
+    (`si.InvoiceType = '0'`), excluding credit notes. Default False = current
+    behaviour (net, credits included).
     """
     try:
         if group_by not in _VALID_GROUP_BY:
@@ -317,7 +333,9 @@ def get_revenue(
                 ),
             )
 
-        current = _fetch_revenue(start_date, end_date, group_by, filters=filters)
+        current = _fetch_revenue(
+            start_date, end_date, group_by, filters=filters, exclude_credits=exclude_credits
+        )
 
         # --- include_ly = False: classic behaviour ---
         if not include_ly:
@@ -346,7 +364,9 @@ def get_revenue(
         # --- include_ly = True: fetch LY and merge ---
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly_rows = _fetch_revenue(ly_start, ly_end, group_by, filters=filters)
+        ly_rows = _fetch_revenue(
+            ly_start, ly_end, group_by, filters=filters, exclude_credits=exclude_credits
+        )
 
         if group_by == "total":
             cur_row = current[0]
@@ -447,20 +467,32 @@ _MARGIN_SEGMENT_CASE = (
 
 
 def _fetch_margin(
-    start_date: str, end_date: str, group_by: str, filters: dict | None = None
+    start_date: str,
+    end_date: str,
+    group_by: str,
+    filters: dict | None = None,
+    exclude_credits: bool = False,
 ) -> list[dict[str, Any]]:
     """Line-level turnover + cost + margin, grouped as requested.
 
+    Excludes Supplier #81 (VDM PART) dropship lines (`sil.PurchasedAt <> 81`)
+    — known data-corruption source (verified 2270 lines / EUR99,959 in June).
+
     `filters` (optional, additive): every group_by variant shares the same
     `sil`/`si` base FROM, so country (si.DeliveryCountry) always applies;
-    customer_group/business_unit add a CUSTSUPPLIER join when the "customer"/
-    "segment" group_by hasn't already added one; make/productgroup add a
-    PRODUCT join when the "make"/"productgroup" group_by hasn't already
-    added one.
+    customer_group/business_unit add a CUSTSUPPLIER join (cs.CustSuppType='1')
+    when the "customer"/"segment" group_by hasn't already added one;
+    make/productgroup add a PRODUCT join when the "make"/"productgroup"
+    group_by hasn't already added one.
+
+    `exclude_credits`: when True, adds `AND si.InvoiceType = '0'` (regular
+    invoices only). Default False = current behaviour (net, credits included).
     """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
-    where = "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?"
+    where = "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+    if exclude_credits:
+        where += " AND si.InvoiceType = '0'"
     params = (start_c8, end_c8)
 
     base_from = "FROM SalesinvoiceLines sil JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
@@ -473,7 +505,7 @@ def _fetch_margin(
 
     extra_join = ""
     if needs_cs:
-        extra_join += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
+        extra_join += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
     if needs_p:
         extra_join += "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
 
@@ -512,14 +544,16 @@ def _fetch_margin(
     elif group_by == "customer":
         sql = (
             f"SELECT cs.Searchname, {amounts} "
-            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
+            f"AND cs.CustSuppType = '1' {extra_join}"
             f"{where}{filter_sql} "
             "GROUP BY cs.Searchname ORDER BY turnover DESC"
         )
     else:  # segment
         sql = (
             f"SELECT {_MARGIN_SEGMENT_CASE} AS business_unit, {amounts} "
-            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"{base_from}JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
+            f"AND cs.CustSuppType = '1' {extra_join}"
             f"{where}{filter_sql} "
             f"GROUP BY {_MARGIN_SEGMENT_CASE} ORDER BY turnover DESC"
         )
@@ -552,6 +586,7 @@ def get_margin_report(
     group_by: str = "total",
     include_ly: bool = False,
     filters: dict | None = None,
+    exclude_credits: bool = False,
 ) -> dict[str, Any]:
     """Gross-margin analysis on SalesinvoiceLines.
 
@@ -561,11 +596,18 @@ def get_margin_report(
     `group_by`: total, country, make, productgroup, customer, segment.
     `include_ly`: same period 1 year earlier, delta added per row.
 
+    Excludes Supplier #81 (VDM PART) dropship lines (`sil.PurchasedAt <> 81`)
+    — known data-corruption source (verified 2270 lines / EUR99,959 in June).
+
     `filters` (optional dict, additive): supports customer_group,
     business_unit, country, make, productgroup on every group_by — the
     query always joins SalesinvoiceLines+Salesinvoice, and adds a
-    CUSTSUPPLIER/PRODUCT join on demand when the chosen group_by hasn't
-    already added one.
+    CUSTSUPPLIER (cs.CustSuppType='1')/PRODUCT join on demand when the
+    chosen group_by hasn't already added one.
+
+    `exclude_credits`: when True, restricts to regular invoices
+    (`si.InvoiceType = '0'`), excluding credit notes. Default False = current
+    behaviour (net, credits included).
 
     NOTE: this is line-level gross margin (sale - cost of goods). It does
     not deduct shipping, VAT, order-handling costs or returns. If your
@@ -585,7 +627,9 @@ def get_margin_report(
         admcms_date(start_date)
         admcms_date(end_date)
 
-        current_raw = _fetch_margin(start_date, end_date, group_by, filters=filters)
+        current_raw = _fetch_margin(
+            start_date, end_date, group_by, filters=filters, exclude_credits=exclude_credits
+        )
         current = [_enrich_margin_row(r) for r in current_raw]
 
         if not include_ly:
@@ -620,7 +664,9 @@ def get_margin_report(
         # include_ly
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly_raw = _fetch_margin(ly_start, ly_end, group_by, filters=filters)
+        ly_raw = _fetch_margin(
+            ly_start, ly_end, group_by, filters=filters, exclude_credits=exclude_credits
+        )
         ly = [_enrich_margin_row(r) for r in ly_raw]
 
         if group_by == "total":
@@ -717,66 +763,90 @@ def get_margin_report(
 
 
 def _fetch_kpi_block(
-    start_date: str, end_date: str, filters: dict | None = None
+    start_date: str,
+    end_date: str,
+    filters: dict | None = None,
+    exclude_credits: bool = False,
 ) -> dict[str, Any]:
     """Run 2 aggregate queries over Salesinvoice + SalesinvoiceLines.
 
-    Returns a single dict with all headline KPI values.
+    Returns a single dict with all headline KPI values. Turnover (and the
+    line/item counts) come from the lines query at LINE grain
+    (SUM(sil.InvoiceAmountHC), `sil.PurchasedAt <> 81`) so Supplier #81
+    (VDM PART) dropship lines are excluded — known data-corruption source
+    (verified 2270 lines / EUR99,959 in June). Shipping + invoice/customer
+    counts stay on the header query.
 
     `filters` (optional, additive): country and customer_group/business_unit
-    apply to both underlying queries (a CUSTSUPPLIER join is added on demand).
-    make/productgroup are not supported (no PRODUCT join available here).
+    apply to both underlying queries (a CUSTSUPPLIER join, cs.CustSuppType='1',
+    is added on demand). make/productgroup are not supported (no PRODUCT join
+    available here).
+
+    `exclude_credits`: when True, restricts both queries to regular invoices
+    (InvoiceType = '0'). Default False = current behaviour (net, credits
+    included).
     """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     params = (start_c8, end_c8)
     needs_cs = _wants_cs(filters)
+    header_credits_clause = " AND InvoiceType = '0'" if exclude_credits else ""
+    lines_credits_clause = " AND inv.InvoiceType = '0'" if exclude_credits else ""
 
-    header_join = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer " if needs_cs else ""
+    header_join = (
+        "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer AND cs.CustSuppType = '1' "
+        if needs_cs else ""
+    )
     header_filter_sql, header_filter_params = build_filter_where(
         filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
     )
     header_sql = (
         "SELECT "
-        "SUM(LineTotal) AS turnover, "
-        "SUM(LineTotal + ShipCost) AS turnover_incl_shipping, "
         "COUNT(DISTINCT Invoicenr) AS invoice_count, "
         "COUNT(DISTINCT Customer) AS ordering_customers, "
         "SUM(ShipCost) AS shipping_revenue, "
         "SUM(ShipCostCalculated) AS shipping_cost "
         "FROM Salesinvoice "
         f"{header_join}"
-        "WHERE InvoiceDate >= ? AND InvoiceDate < ?" + header_filter_sql
+        "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
+        + header_credits_clause
+        + header_filter_sql
     )
     header_rows = execute_query_params(
         header_sql, params + header_filter_params, max_rows=1
     )
     h = header_rows[0] if header_rows else {}
 
-    lines_join = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = inv.Customer " if needs_cs else ""
+    lines_join = (
+        "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = inv.Customer AND cs.CustSuppType = '1' "
+        if needs_cs else ""
+    )
     lines_filter_sql, lines_filter_params = build_filter_where(
         filters, cs="cs" if needs_cs else None, country_col="inv.DeliveryCountry"
     )
     lines_sql = (
-        "SELECT COUNT(*) AS line_count, SUM(ThisIinvoice) AS item_count "
+        "SELECT COUNT(*) AS line_count, SUM(ThisIinvoice) AS item_count, "
+        "SUM(sil.InvoiceAmountHC) AS turnover "
         "FROM SalesinvoiceLines sil "
         "JOIN Salesinvoice inv ON inv.Invoicenr = sil.Invoicenr "
         f"{lines_join}"
-        "WHERE inv.InvoiceDate >= ? AND inv.InvoiceDate < ?" + lines_filter_sql
+        "WHERE inv.InvoiceDate >= ? AND inv.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+        + lines_credits_clause
+        + lines_filter_sql
     )
     line_rows = execute_query_params(
         lines_sql, params + lines_filter_params, max_rows=1
     )
     ln = line_rows[0] if line_rows else {}
 
-    turnover = float(h.get("turnover") or 0)
+    turnover = float(ln.get("turnover") or 0)
     invoice_count = int(h.get("invoice_count") or 0)
     shipping_rev = float(h.get("shipping_revenue") or 0)
     shipping_cost = float(h.get("shipping_cost") or 0)
     shipping_margin = shipping_rev - shipping_cost
     return {
         "turnover": turnover,
-        "turnover_incl_shipping": float(h.get("turnover_incl_shipping") or 0),
+        "turnover_incl_shipping": turnover + shipping_rev,
         "invoice_count": invoice_count,
         "ordering_customers": int(h.get("ordering_customers") or 0),
         "aov": (turnover / invoice_count) if invoice_count else 0.0,
@@ -794,6 +864,7 @@ def get_kpi_summary(
     end_date: str,
     include_ly: bool = True,
     filters: dict | None = None,
+    exclude_credits: bool = False,
 ) -> dict[str, Any]:
     """Top-level performance KPIs (turnover, shipping, customers, AOV, lines).
 
@@ -801,16 +872,26 @@ def get_kpi_summary(
     With `include_ly=True` (default), the same period one year earlier is
     queried and delta + delta_pct computed for each metric.
 
-    All amounts are in home currency (HC). Turnover uses
-    SALESINVOICE.LineTotal (ex-VAT). AOV = turnover / invoice_count.
+    All amounts are in home currency (HC). Turnover is computed at LINE
+    grain (SUM(SalesinvoiceLines.InvoiceAmountHC)) excluding Supplier #81
+    (VDM PART) dropship lines (`sil.PurchasedAt <> 81`) — known
+    data-corruption source (verified 2270 lines / EUR99,959 in June).
+    AOV = turnover / invoice_count.
 
     `filters` (optional dict, additive): supports `country` and
-    `customer_group`/`business_unit` (adds a CUSTSUPPLIER join). `make`/
-    `productgroup` are not supported by this tool (header + line-count
-    queries have no PRODUCT join) and are ignored if passed.
+    `customer_group`/`business_unit` (adds a CUSTSUPPLIER join,
+    cs.CustSuppType='1'). `make`/`productgroup` are not supported by this
+    tool (header + line-count queries have no PRODUCT join) and are ignored
+    if passed.
+
+    `exclude_credits`: when True, restricts both underlying queries to
+    regular invoices (`InvoiceType = '0'`), excluding credit notes. Default
+    False = current behaviour (net, credits included).
     """
     try:
-        current = _fetch_kpi_block(start_date, end_date, filters=filters)
+        current = _fetch_kpi_block(
+            start_date, end_date, filters=filters, exclude_credits=exclude_credits
+        )
         if not include_ly:
             return format_response(
                 data=[current],
@@ -822,7 +903,9 @@ def get_kpi_summary(
 
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly = _fetch_kpi_block(ly_start, ly_end, filters=filters)
+        ly = _fetch_kpi_block(
+            ly_start, ly_end, filters=filters, exclude_credits=exclude_credits
+        )
 
         deltas: dict[str, Any] = {}
         for metric in (
@@ -879,8 +962,10 @@ def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict[str, An
       - 'INTC' -> IC (intercompany)
       - alles anders -> Overig
 
-    Revenue uses SALESINVOICE.LineTotal (ex-VAT, home currency). Dates are
-    ISO YYYY-MM-DD; internally converted to ADMCMS char(8).
+    Revenue is computed at LINE grain (SUM(SalesinvoiceLines.InvoiceAmountHC))
+    excluding Supplier #81 (VDM PART) dropship lines (`sil.PurchasedAt <> 81`)
+    — known data-corruption source (verified 2270 lines / EUR99,959 in June).
+    Dates are ISO YYYY-MM-DD; internally converted to ADMCMS char(8).
     """
     try:
         start_c8 = admcms_date(start_date)
@@ -888,11 +973,12 @@ def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict[str, An
 
         sql = (
             f"SELECT {_BUSINESS_UNIT_CASE} AS business_unit, "
-            "COUNT(*) AS invoice_count, "
-            "SUM(si.LineTotal) AS total_amount "
-            "FROM SALESINVOICE si "
-            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count, "
+            "SUM(sil.InvoiceAmountHC) AS total_amount "
+            "FROM SALESINVOICELINES sil "
+            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81 "
             f"GROUP BY {_BUSINESS_UNIT_CASE} "
             "ORDER BY total_amount DESC"
         )
@@ -921,9 +1007,11 @@ def get_top_customers(
 ) -> dict[str, Any]:
     """Return the top customers on invoice revenue between two dates.
 
-    Filters to CustSuppType = '1' (customers only, not suppliers).
-    Revenue uses SALESINVOICE.LineTotal (ex-VAT, home currency). Dates
-    are ISO YYYY-MM-DD; internally converted to ADMCMS char(8).
+    Filters to CustSuppType = '1' (customers only, not suppliers). Revenue
+    is computed at LINE grain (SUM(SalesinvoiceLines.InvoiceAmountHC))
+    excluding Supplier #81 (VDM PART) dropship lines (`sil.PurchasedAt <>
+    81`) — known data-corruption source (verified 2270 lines / EUR99,959 in
+    June). Dates are ISO YYYY-MM-DD; internally converted to ADMCMS char(8).
 
     `filters` (optional dict, additive): supports `country` (si.DeliveryCountry)
     and `customer_group`/`business_unit` (CUSTSUPPLIER is already joined as
@@ -939,12 +1027,13 @@ def get_top_customers(
         sql = (
             f"SELECT TOP ({effective_limit}) cs.CustSuppnr, cs.Searchname, "
             "cs.CustSuppGroup, "
-            "COUNT(DISTINCT si.Invoicenr) AS invoice_count, "
-            "SUM(si.LineTotal) AS total_amount "
-            "FROM SALESINVOICE si "
-            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
-            "AND cs.CustSuppType = '1'" + filter_sql + " "
+            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count, "
+            "SUM(sil.InvoiceAmountHC) AS total_amount "
+            "FROM SALESINVOICELINES sil "
+            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+            + filter_sql + " "
             "GROUP BY cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup "
             "ORDER BY total_amount DESC"
         )
@@ -1525,6 +1614,7 @@ def get_customer_orders(
             "soh.DeliveryDate, soh.OrderAmount, soh.SalesOrdersystemStatus "
             "FROM SalesOrderHeader soh "
             "LEFT JOIN CustSupplier cs ON cs.CustSuppnr = soh.Customer "
+            "AND cs.CustSuppType = '1' "
             f"WHERE {where_sql} "
             "ORDER BY soh.OrderDate DESC" + page_sql
         )
@@ -1554,7 +1644,12 @@ _VALID_CREDIT_NOTE_GROUP_BY = ("segment", "country", "customer", "make", "total"
 
 
 def _fetch_credit_notes(start_date: str, end_date: str, group_by: str) -> list[dict[str, Any]]:
-    """Credit-invoice aggregation (InvoiceType='1'). Returns rows per group."""
+    """Credit-invoice aggregation (InvoiceType='1'). Returns rows per group.
+
+    The `make` group_by joins SalesinvoiceLines and excludes Supplier #81
+    (VDM PART) dropship lines (`sil.PurchasedAt <> 81`), consistent with all
+    other line-grain queries.
+    """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     where_base = "WHERE si.InvoiceType = '1' AND si.InvoiceDate >= ? AND si.InvoiceDate < ?"
@@ -1583,7 +1678,7 @@ def _fetch_credit_notes(start_date: str, end_date: str, group_by: str) -> list[d
         sql = (
             f"SELECT {_MARGIN_SEGMENT_CASE} AS segment, {measures} "
             f"FROM Salesinvoice si "
-            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer "
+            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
             f"{where_base} "
             f"GROUP BY {_MARGIN_SEGMENT_CASE} ORDER BY credit_count DESC"
         )
@@ -1604,7 +1699,7 @@ def _fetch_credit_notes(start_date: str, end_date: str, group_by: str) -> list[d
         sql = (
             f"SELECT cs.Searchname, {measures} "
             f"FROM Salesinvoice si "
-            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer "
+            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
             f"{where_base} "
             "GROUP BY cs.Searchname ORDER BY credit_count DESC"
         )
@@ -1617,7 +1712,7 @@ def _fetch_credit_notes(start_date: str, end_date: str, group_by: str) -> list[d
             "FROM Salesinvoice si "
             "JOIN SalesinvoiceLines sil ON sil.Invoicenr = si.Invoicenr "
             "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-            f"{where_base} "
+            f"{where_base} AND sil.PurchasedAt <> 81 "
             "GROUP BY p.Make ORDER BY credit_count DESC"
         )
     return execute_query_params(sql, params, max_rows=500)
@@ -1919,16 +2014,21 @@ def _fetch_discount(
     start_date: str, end_date: str, group_by: str, filters: dict | None = None
 ) -> list[dict[str, Any]]:
     """`filters` (optional, additive): supports customer_group, business_unit,
-    make, productgroup on every group_by (adds CUSTSUPPLIER/PRODUCT joins on
-    demand when the chosen group_by hasn't already added one). `country` is
-    NOT supported by this tool (out of scope for this slice) and is ignored.
+    make, productgroup on every group_by (adds CUSTSUPPLIER (cs.CustSuppType
+    ='1')/PRODUCT joins on demand when the chosen group_by hasn't already
+    added one). `country` is NOT supported by this tool (out of scope for
+    this slice) and is ignored.
+
+    Excludes Supplier #81 (VDM PART) dropship lines (`sil.PurchasedAt <> 81`)
+    — known data-corruption source (verified 2270 lines / EUR99,959 in June).
     """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     where = (
         "WHERE si.InvoiceType = '0' "
         "AND si.InvoiceDate >= ? AND si.InvoiceDate < ? "
-        "AND sil.DiscountAmount > 0"
+        "AND sil.DiscountAmount > 0 "
+        "AND sil.PurchasedAt <> 81"
     )
     # Gross (pre-discount) = NetAmountHC + DiscountAmount
     measures = (
@@ -1946,7 +2046,7 @@ def _fetch_discount(
 
     extra_join = ""
     if needs_cs:
-        extra_join += "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer "
+        extra_join += "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
     if needs_p:
         extra_join += "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
 
@@ -1968,7 +2068,7 @@ def _fetch_discount(
         sql = (
             f"SELECT {_MARGIN_SEGMENT_CASE} AS segment, {measures} "
             f"{base_from}"
-            f"JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' {extra_join}"
             f"{where}{filter_sql} "
             f"GROUP BY {_MARGIN_SEGMENT_CASE} ORDER BY total_discount DESC"
         )
@@ -1976,7 +2076,7 @@ def _fetch_discount(
         sql = (
             f"SELECT cs.Searchname, {measures} "
             f"{base_from}"
-            f"JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer {extra_join}"
+            f"JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' {extra_join}"
             f"{where}{filter_sql} "
             "GROUP BY cs.Searchname ORDER BY total_discount DESC"
         )
@@ -2073,13 +2173,20 @@ def _fetch_order_origin(
     start_date: str, end_date: str, filters: dict | None = None
 ) -> list[dict[str, Any]]:
     """`filters` (optional, additive): supports `country` (si.DeliveryCountry)
-    and `customer_group`/`business_unit` (adds a CUSTSUPPLIER join when
-    requested). `make`/`productgroup` are not supported (no PRODUCT join).
+    and `customer_group`/`business_unit` (adds a CUSTSUPPLIER join,
+    cs.CustSuppType='1', when requested). `make`/`productgroup` are not
+    supported (no PRODUCT join).
+
+    Excludes Supplier #81 (VDM PART) dropship lines (`sil.PurchasedAt <> 81`)
+    — known data-corruption source (verified 2270 lines / EUR99,959 in June).
     """
     start_c8 = admcms_date(start_date)
     end_c8 = admcms_date(end_date)
     needs_cs = _wants_cs(filters)
-    join_clause = "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer " if needs_cs else ""
+    join_clause = (
+        "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+        if needs_cs else ""
+    )
     filter_sql, filter_params = build_filter_where(
         filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
     )
@@ -2092,7 +2199,8 @@ def _fetch_order_origin(
         "JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
         f"{join_clause}"
         "WHERE si.InvoiceType = '0' "
-        "AND si.InvoiceDate >= ? AND si.InvoiceDate < ?" + filter_sql + " "
+        "AND si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+        "AND sil.PurchasedAt <> 81" + filter_sql + " "
         "GROUP BY sil.OrderOrigin ORDER BY line_count DESC"
     )
     return execute_query_params(sql, (start_c8, end_c8) + filter_params, max_rows=100)

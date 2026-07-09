@@ -330,7 +330,7 @@ class TestGetRevenueFilters:
         )
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
-        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer" in sql
+        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
         assert "cs.CustSuppGroup IN (?)" in sql
         assert "G2" in params
 
@@ -369,8 +369,11 @@ class TestGetRevenueFilters:
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
         assert sql == (
-            "SELECT SUM(LineTotal) AS total_amount, COUNT(*) AS invoice_count "
-            "FROM SALESINVOICE WHERE InvoiceDate >= ? AND InvoiceDate < ?"
+            "SELECT SUM(sil.InvoiceAmountHC) AS total_amount, "
+            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count "
+            "FROM SALESINVOICELINES sil JOIN SALESINVOICE si "
+            "ON si.Invoicenr = sil.Invoicenr "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
         )
         assert params == ("20260101", "20260201")
 
@@ -408,14 +411,16 @@ class TestGetRevenueByBusinessUnit:
         assert "'Overig'" in sql
 
     @patch("admcms_mcp.tools.execute_query_params")
-    def test_uses_linetotal_and_invoicedate(self, mock_execute):
+    def test_uses_line_grain_turnover_and_invoicedate(self, mock_execute):
         from admcms_mcp.tools import get_revenue_by_business_unit
 
         mock_execute.return_value = []
         get_revenue_by_business_unit("2026-01-01", "2026-02-01")
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
-        assert "LineTotal" in sql
+        assert "SALESINVOICELINES" in sql.upper()
+        assert "SUM(sil.InvoiceAmountHC)" in sql
+        assert "sil.PurchasedAt <> 81" in sql
         assert "InvoiceDate" in sql
         assert params == ("20260101", "20260201")
 
@@ -517,12 +522,12 @@ class TestGetTopCustomersFilters:
         params = mock_execute.call_args[0][1]
         assert sql == (
             "SELECT TOP (5) cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup, "
-            "COUNT(DISTINCT si.Invoicenr) AS invoice_count, "
-            "SUM(si.LineTotal) AS total_amount "
-            "FROM SALESINVOICE si "
-            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
-            "AND cs.CustSuppType = '1' "
+            "COUNT(DISTINCT sil.Invoicenr) AS invoice_count, "
+            "SUM(sil.InvoiceAmountHC) AS total_amount "
+            "FROM SALESINVOICELINES sil "
+            "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81 "
             "GROUP BY cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup "
             "ORDER BY total_amount DESC"
         )
@@ -1079,7 +1084,7 @@ class TestGetMarginReportFilters:
             "SUM(sil.CostAmountBookedHC) AS cost "
             "FROM SalesinvoiceLines sil JOIN Salesinvoice si "
             "ON si.Invoicenr = sil.Invoicenr WHERE si.InvoiceDate >= ? "
-            "AND si.InvoiceDate < ?"
+            "AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
         )
         assert params == ("20260101", "20260201")
 
@@ -1176,9 +1181,7 @@ class TestGetKpiSummaryFilters:
         header_sql = mock_execute.call_args_list[0][0][0]
         header_params = mock_execute.call_args_list[0][0][1]
         assert header_sql == (
-            "SELECT SUM(LineTotal) AS turnover, "
-            "SUM(LineTotal + ShipCost) AS turnover_incl_shipping, "
-            "COUNT(DISTINCT Invoicenr) AS invoice_count, "
+            "SELECT COUNT(DISTINCT Invoicenr) AS invoice_count, "
             "COUNT(DISTINCT Customer) AS ordering_customers, "
             "SUM(ShipCost) AS shipping_revenue, "
             "SUM(ShipCostCalculated) AS shipping_cost "
@@ -1186,6 +1189,17 @@ class TestGetKpiSummaryFilters:
             "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
         )
         assert header_params == ("20260101", "20260201")
+
+        lines_sql = mock_execute.call_args_list[1][0][0]
+        lines_params = mock_execute.call_args_list[1][0][1]
+        assert lines_sql == (
+            "SELECT COUNT(*) AS line_count, SUM(ThisIinvoice) AS item_count, "
+            "SUM(sil.InvoiceAmountHC) AS turnover "
+            "FROM SalesinvoiceLines sil "
+            "JOIN Salesinvoice inv ON inv.Invoicenr = sil.Invoicenr "
+            "WHERE inv.InvoiceDate >= ? AND inv.InvoiceDate < ? AND sil.PurchasedAt <> 81"
+        )
+        assert lines_params == ("20260101", "20260201")
 
 
 class TestGetCreditNoteAnalysis:
@@ -1333,7 +1347,8 @@ class TestGetDiscountAnalysisFilters:
             "ON si.Invoicenr = sil.Invoicenr "
             "WHERE si.InvoiceType = '0' "
             "AND si.InvoiceDate >= ? AND si.InvoiceDate < ? "
-            "AND sil.DiscountAmount > 0"
+            "AND sil.DiscountAmount > 0 "
+            "AND sil.PurchasedAt <> 81"
         )
         assert params == ("20260401", "20260501")
 
@@ -1412,6 +1427,7 @@ class TestGetOrderOriginMixFilters:
             "JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
             "WHERE si.InvoiceType = '0' "
             "AND si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+            "AND sil.PurchasedAt <> 81 "
             "GROUP BY sil.OrderOrigin ORDER BY line_count DESC"
         )
         assert params == ("20260401", "20260501")
@@ -1712,3 +1728,138 @@ class TestGetFilterOptions:
         assert second["make"] == ["MAHLE"]  # merged from prior known-good
         assert second["productgroup"] == ["HOD"]  # recovered this round
         assert "make" in second["error"]
+
+
+# =========================================================================
+# Fix slice: line-grain turnover excl. Supplier #81 (VDM PART) + customer-side
+# CUSTSUPPLIER joins scoped to CustSuppType='1' + optional exclude_credits.
+# =========================================================================
+
+
+class TestLineGrainTurnoverExcludesSupplier81:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_get_revenue_default_sql_excludes_supplier_81(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
+        get_revenue("2026-01-01", "2026-02-01", group_by="total", filters=None)
+        sql = mock_execute.call_args[0][0]
+        assert "sil.PurchasedAt <> 81" in sql
+        assert "SUM(sil.InvoiceAmountHC)" in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_fetch_margin_sql_excludes_supplier_81(self, mock_execute):
+        from admcms_mcp.tools import _fetch_margin
+
+        mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
+        _fetch_margin("2026-01-01", "2026-02-01", "total")
+        sql = mock_execute.call_args[0][0]
+        assert "sil.PurchasedAt <> 81" in sql
+
+
+class TestCustSuppTypeGuardOnCustomerJoins:
+    """Every customer-side CUSTSUPPLIER join must carry CustSuppType = '1'
+    so customer numbers that also exist as supplier numbers aren't
+    double-counted."""
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_business_unit_join_carries_custsupptype(self, mock_execute):
+        from admcms_mcp.tools import get_revenue_by_business_unit
+
+        mock_execute.return_value = []
+        get_revenue_by_business_unit("2026-01-01", "2026-02-01")
+        sql = mock_execute.call_args[0][0]
+        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_top_customers_join_carries_custsupptype(self, mock_execute):
+        from admcms_mcp.tools import get_top_customers
+
+        mock_execute.return_value = []
+        get_top_customers("2026-01-01", "2026-02-01")
+        sql = mock_execute.call_args[0][0]
+        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_margin_segment_join_carries_custsupptype(self, mock_execute):
+        from admcms_mcp.tools import _fetch_margin
+
+        mock_execute.return_value = []
+        _fetch_margin("2026-01-01", "2026-02-01", "segment")
+        sql = mock_execute.call_args[0][0]
+        assert "cs.CustSuppnr = si.Customer" in sql
+        assert "cs.CustSuppType = '1'" in sql
+
+
+class TestExcludeCreditsFlag:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_get_revenue_exclude_credits_true_adds_invoicetype_filter(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
+        get_revenue(
+            "2026-01-01", "2026-02-01", group_by="total", exclude_credits=True
+        )
+        sql = mock_execute.call_args[0][0]
+        assert "InvoiceType = '0'" in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_get_revenue_exclude_credits_false_default_omits_filter(self, mock_execute):
+        from admcms_mcp.tools import get_revenue
+
+        mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
+        get_revenue("2026-01-01", "2026-02-01", group_by="total")
+        sql = mock_execute.call_args[0][0]
+        assert "InvoiceType" not in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_get_margin_report_exclude_credits_true_adds_invoicetype_filter(
+        self, mock_execute
+    ):
+        from admcms_mcp.tools import get_margin_report
+
+        mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
+        get_margin_report(
+            "2026-01-01", "2026-02-01", group_by="total", exclude_credits=True
+        )
+        sql = mock_execute.call_args[0][0]
+        assert "si.InvoiceType = '0'" in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_get_margin_report_exclude_credits_false_default_omits_filter(
+        self, mock_execute
+    ):
+        from admcms_mcp.tools import get_margin_report
+
+        mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
+        get_margin_report("2026-01-01", "2026-02-01", group_by="total")
+        sql = mock_execute.call_args[0][0]
+        assert "InvoiceType" not in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_get_kpi_summary_exclude_credits_true_adds_invoicetype_filter(
+        self, mock_execute
+    ):
+        from admcms_mcp.tools import get_kpi_summary
+
+        mock_execute.return_value = [{}]
+        get_kpi_summary(
+            "2026-01-01", "2026-02-01", include_ly=False, exclude_credits=True
+        )
+        header_sql = mock_execute.call_args_list[0][0][0]
+        lines_sql = mock_execute.call_args_list[1][0][0]
+        assert "InvoiceType = '0'" in header_sql
+        assert "inv.InvoiceType = '0'" in lines_sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_get_kpi_summary_exclude_credits_false_default_omits_filter(
+        self, mock_execute
+    ):
+        from admcms_mcp.tools import get_kpi_summary
+
+        mock_execute.return_value = [{}]
+        get_kpi_summary("2026-01-01", "2026-02-01", include_ly=False)
+        header_sql = mock_execute.call_args_list[0][0][0]
+        lines_sql = mock_execute.call_args_list[1][0][0]
+        assert "InvoiceType" not in header_sql
+        assert "InvoiceType" not in lines_sql
