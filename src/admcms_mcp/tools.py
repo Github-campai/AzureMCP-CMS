@@ -1002,6 +1002,92 @@ def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict[str, An
         return format_response(data=[], error=f"Execution error: {e}")
 
 
+def get_country_segment_matrix(start_date: str, end_date: str) -> dict[str, Any]:
+    """Country x Segment matrix of turnover, margin and shipping.
+
+    Backs the PBI page "Turnover per Country and Segment". Two deterministic
+    queries merged per (country, segment):
+      - line grain (SalesinvoiceLines, excl Supplier #81 via PurchasedAt<>81):
+        turnover = SUM(InvoiceAmountHC), cost = SUM(CostAmountBookedHC)
+      - header grain (Salesinvoice; one country + one customer per invoice, so
+        no double-count): shipping = SUM(ShipCost), shipping_cost =
+        SUM(ShipCostCalculated)
+    Segment (B2C/B2B/IC/Overig) is derived from CustSupplier.CustSuppGroup;
+    customers only (CustSuppType='1'). Dates are ISO YYYY-MM-DD.
+
+    Returns rows with: country, segment, turnover, margin, margin_pct,
+    shipping, shipping_cost, shipping_margin, shipping_margin_pct.
+    """
+    try:
+        start_c8 = admcms_date(start_date)
+        end_c8 = admcms_date(end_date)
+
+        line_sql = (
+            f"SELECT si.DeliveryCountry AS country, {_MARGIN_SEGMENT_CASE} AS segment, "
+            "SUM(sil.InvoiceAmountHC) AS turnover, SUM(sil.CostAmountBookedHC) AS cost "
+            "FROM SalesinvoiceLines sil "
+            "JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
+            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81 "
+            f"GROUP BY si.DeliveryCountry, {_MARGIN_SEGMENT_CASE}"
+        )
+        line_rows = execute_query_params(line_sql, (start_c8, end_c8), max_rows=2000)
+
+        ship_sql = (
+            f"SELECT si.DeliveryCountry AS country, {_MARGIN_SEGMENT_CASE} AS segment, "
+            "SUM(si.ShipCost) AS shipping, SUM(si.ShipCostCalculated) AS shipping_cost "
+            "FROM Salesinvoice si "
+            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? "
+            f"GROUP BY si.DeliveryCountry, {_MARGIN_SEGMENT_CASE}"
+        )
+        ship_rows = execute_query_params(ship_sql, (start_c8, end_c8), max_rows=2000)
+
+        ship_idx = {(r.get("country"), r.get("segment")): r for r in ship_rows}
+        rows: list[dict[str, Any]] = []
+        for r in line_rows:
+            key = (r.get("country"), r.get("segment"))
+            turnover = float(r.get("turnover") or 0)
+            cost = float(r.get("cost") or 0)
+            margin = turnover - cost
+            s = ship_idx.get(key, {})
+            shipping = float(s.get("shipping") or 0)
+            shipping_cost = float(s.get("shipping_cost") or 0)
+            shipping_margin = shipping - shipping_cost
+            rows.append(
+                {
+                    "country": r.get("country"),
+                    "segment": r.get("segment"),
+                    "turnover": turnover,
+                    "margin": margin,
+                    "margin_pct": _pct(margin, turnover),
+                    "shipping": shipping,
+                    "shipping_cost": shipping_cost,
+                    "shipping_margin": shipping_margin,
+                    "shipping_margin_pct": _pct(shipping_margin, shipping),
+                }
+            )
+        rows.sort(key=lambda x: x["turnover"], reverse=True)
+        total_turnover = sum(r["turnover"] for r in rows)
+        total_margin = sum(r["margin"] for r in rows)
+        return format_response(
+            data=rows,
+            summary={
+                "turnover": total_turnover,
+                "margin": total_margin,
+                "margin_pct": _pct(total_margin, total_turnover),
+                "rows": len(rows),
+                "period": f"{start_date}..{end_date}",
+            },
+        )
+    except ValueError as e:
+        logger.info("get_country_segment_matrix rejected: %s", e)
+        return format_response(data=[], error=str(e))
+    except Exception as e:
+        logger.exception("get_country_segment_matrix failed")
+        return format_response(data=[], error=f"Execution error: {e}")
+
+
 def get_top_customers(
     start_date: str, end_date: str, limit: int = 10, filters: dict | None = None
 ) -> dict[str, Any]:

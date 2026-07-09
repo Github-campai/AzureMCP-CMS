@@ -38,6 +38,7 @@ from admcms_mcp.tools import get_margin_report as _get_margin_report
 from admcms_mcp.tools import get_order_origin_mix as _get_order_origin_mix
 from admcms_mcp.tools import get_payment_method_stats as _get_payment_method_stats
 from admcms_mcp.tools import get_revenue as _get_revenue
+from admcms_mcp.tools import get_country_segment_matrix as _get_country_segment_matrix
 from admcms_mcp.tools import get_revenue_by_business_unit as _get_revenue_by_business_unit
 from admcms_mcp.tools import get_salesrep_performance as _get_salesrep_performance
 from admcms_mcp.tools import get_schema as _get_schema
@@ -553,6 +554,29 @@ def _build_mcp_server() -> FastMCP:
             "get_revenue_by_business_unit",
             {"start_date": start_date, "end_date": end_date},
             lambda: _get_revenue_by_business_unit(start_date, end_date),
+        )
+
+    @mcp.tool()
+    def get_country_segment_matrix(start_date: str, end_date: str) -> dict:
+        """Country x Segment matrix: turnover, margin (+%) and shipping (+cost/margin/%).
+
+        Backs the PBI page "Turnover per Country and Segment". Turnover/margin are
+        line-grain (SUM(InvoiceAmountHC/CostAmountBookedHC), excl Supplier #81);
+        shipping is header-grain (SUM(ShipCost/ShipCostCalculated)). Segment is
+        B2C/B2B/IC/Overig via CustSuppGroup; customers only (CustSuppType='1').
+
+        Args:
+            start_date: ISO YYYY-MM-DD, inclusive.
+            end_date: ISO YYYY-MM-DD, exclusive.
+
+        Returns: {data: [{country, segment, turnover, margin, margin_pct,
+                  shipping, shipping_cost, shipping_margin, shipping_margin_pct}, ...],
+                  summary: {turnover, margin, margin_pct, rows, period}, error}.
+        """
+        return _audited(
+            "get_country_segment_matrix",
+            {"start_date": start_date, "end_date": end_date},
+            lambda: _get_country_segment_matrix(start_date, end_date),
         )
 
     @mcp.tool()

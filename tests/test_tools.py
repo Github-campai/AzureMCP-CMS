@@ -1757,6 +1757,52 @@ class TestLineGrainTurnoverExcludesSupplier81:
         assert "sil.PurchasedAt <> 81" in sql
 
 
+class TestCountrySegmentMatrix:
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_merges_line_and_shipping_by_country_segment(self, mock_execute):
+        from admcms_mcp.tools import get_country_segment_matrix
+
+        # 1st call = line grain (turnover/cost), 2nd call = header shipping
+        mock_execute.side_effect = [
+            [{"country": "NL", "segment": "B2B", "turnover": 1000.0, "cost": 600.0}],
+            [{"country": "NL", "segment": "B2B", "shipping": 50.0, "shipping_cost": 30.0}],
+        ]
+        res = get_country_segment_matrix("2026-01-01", "2026-02-01")
+        row = res["data"][0]
+        assert row["country"] == "NL" and row["segment"] == "B2B"
+        assert row["turnover"] == 1000.0
+        assert row["margin"] == 400.0
+        assert round(row["margin_pct"], 2) == 40.0
+        assert row["shipping"] == 50.0
+        assert row["shipping_cost"] == 30.0
+        assert row["shipping_margin"] == 20.0
+        assert round(row["shipping_margin_pct"], 2) == 40.0
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_line_query_excludes_81_and_guards_custsupptype(self, mock_execute):
+        from admcms_mcp.tools import get_country_segment_matrix
+
+        mock_execute.side_effect = [[], []]
+        get_country_segment_matrix("2026-01-01", "2026-02-01")
+        line_sql = mock_execute.call_args_list[0][0][0]
+        assert "sil.PurchasedAt <> 81" in line_sql
+        assert "cs.CustSuppType = '1'" in line_sql
+        assert "SUM(sil.InvoiceAmountHC)" in line_sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_missing_shipping_row_defaults_to_zero(self, mock_execute):
+        from admcms_mcp.tools import get_country_segment_matrix
+
+        mock_execute.side_effect = [
+            [{"country": "BE", "segment": "B2C", "turnover": 200.0, "cost": 150.0}],
+            [],  # no shipping rows
+        ]
+        res = get_country_segment_matrix("2026-01-01", "2026-02-01")
+        row = res["data"][0]
+        assert row["shipping"] == 0 and row["shipping_margin"] == 0
+        assert row["shipping_margin_pct"] is None
+
+
 class TestCustSuppTypeGuardOnCustomerJoins:
     """Every customer-side CUSTSUPPLIER join must carry CustSuppType = '1'
     so customer numbers that also exist as supplier numbers aren't

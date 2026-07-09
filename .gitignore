@@ -55,3 +55,6 @@ ngrok.exe
 # Audit log (runtime — never commit)
 data/
 *.db
+
+# subagent-driven scratch
+.superpowers/
