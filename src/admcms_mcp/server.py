@@ -28,6 +28,7 @@ from admcms_mcp.admin import build_admin_routes
 from admcms_mcp.audit import audit_call, current_user
 from admcms_mcp.auth import Forbidden, InvalidToken, check_access, validate_jwt
 from admcms_mcp.config import get_settings
+from admcms_mcp.db import _MAX_ROWS_HARD_LIMIT, reset_truncation, was_truncated
 from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
 from admcms_mcp.oauth import build_oauth_routes, protected_resource_metadata_url
 from admcms_mcp.schema import SCHEMA_KNOWLEDGE
@@ -278,7 +279,14 @@ async def index(request: Request) -> HTMLResponse:
 
 
 def _audited(tool_name: str, args: dict, call):
-    """Run a tool inside an audit_call context and record summary/row_count/error."""
+    """Run a tool inside an audit_call context and record summary/row_count/error.
+
+    Also the single place where row-cap truncation is surfaced. Every tool goes
+    through here, so a result set that was cut off says so in its own response
+    instead of leaving the caller to reason over a partial answer as if it were
+    complete.
+    """
+    reset_truncation()
     with audit_call(tool_name, args) as entry:
         result = call()
         if isinstance(result, dict):
@@ -290,6 +298,15 @@ def _audited(tool_name: str, args: dict, call):
             err = result.get("error")
             if err and entry.error is None:
                 entry.error = str(err)
+            if was_truncated():
+                result["truncated"] = True
+                result.setdefault(
+                    "truncated_hint",
+                    "Het resultaat is afgekapt op de rijlimiet; dit is GEEN volledig "
+                    "antwoord. Vraag een volgende pagina op via offset/limit waar de "
+                    "tool die ondersteunt, verklein de periode of het filter, of "
+                    "gebruik describe_server voor de limieten per tool.",
+                )
         return result
 
 
@@ -1047,6 +1064,106 @@ def _build_mcp_server() -> FastMCP:
                 offset=offset,
             ),
         )
+
+    @mcp.tool()
+    async def describe_server() -> dict:
+        """Wat is deze MCP, wie ben je, en wat kun je hier ophalen? START HIER.
+
+        Beschrijft zichzelf: de tool-inventaris met per tool of hij filters en
+        paginatie ondersteunt, de rijlimieten en hoe afkapping wordt gemeld, plus
+        de eigenaardigheden in de data die tot verkeerde conclusies leiden.
+
+        Alles wordt afgeleid uit het live tool-register, dus deze beschrijving kan
+        niet achterlopen op de code.
+        """
+
+        def _describe(tool) -> dict:
+            schema = tool.inputSchema or {}
+            props = schema.get("properties") or {}
+            beschrijving = (tool.description or "").strip()
+            return {
+                "naam": tool.name,
+                "samenvatting": beschrijving.splitlines()[0] if beschrijving else "",
+                "argumenten": sorted(props),
+                "ondersteunt_filters": "filters" in props,
+                "ondersteunt_paginatie": bool({"offset", "limit"} & set(props)),
+            }
+
+        tools = sorted(await mcp.list_tools(), key=lambda x: x.name)
+        beschreven = [_describe(tool) for tool in tools]
+
+        try:
+            wie = current_user.get() or "onbekend"
+        except Exception:
+            wie = "onbekend"
+
+        settings = get_settings()
+
+        return {
+            "server": {
+                "naam": "admcms-mcp",
+                "waarvoor": (
+                    "Read-only toegang tot de ADMCMS-database van CMS Lelystad: "
+                    "verkoop, marges, klanten, orders, voorraad en verzendkosten."
+                ),
+                "gehost_door": "Campai (MSP), Azure Container Apps",
+                "database": f"{settings.admcms_database} op {settings.admcms_server}",
+                "schrijfrechten": (
+                    "Geen. Elke tool is SELECT-only, de databaselogin heeft alleen "
+                    "db_datareader en de SQL wordt gevalideerd voor uitvoering."
+                ),
+                "aantal_tools": len(beschreven),
+                "documentatie": "https://github.com/Github-campai/AzureMCP-CMS",
+            },
+            "jij": {
+                "identiteit": wie,
+                "authenticatie": (
+                    "Microsoft Entra ID (OAuth 2.1). Toegang vereist een tenant uit de "
+                    "toegestane lijst plus lidmaatschap van de allowlist-groep; "
+                    "Entra-adminrechten geven op zichzelf geen toegang."
+                ),
+            },
+            "tools": beschreven,
+            "limieten": {
+                "max_rijen_per_query": _MAX_ROWS_HARD_LIMIT,
+                "afkapping": (
+                    "Als een resultaat op de rijlimiet is afgekapt, staat er "
+                    "'truncated': true in de response. Dat betekent dat het antwoord "
+                    "NIET volledig is -- niet doorrekenen alsof het dat wel is."
+                ),
+                "paginatie": (
+                    "Tools met offset/limit geven summary.has_more en "
+                    "summary.next_offset terug. Blijf pagina's opvragen tot has_more "
+                    "false is als je alles nodig hebt."
+                ),
+                "filterwaarden": (
+                    "get_filter_options geeft standaard een top-N per dimensie en "
+                    "meldt in 'complete' en 'truncated_dimensions' of dat de volledige "
+                    "set is. Roep get_filter_options(max_per_dim=1000) aan voor alles."
+                ),
+            },
+            "let_op": [
+                "Bedragen staan in de eigen valuta (home currency), niet omgerekend.",
+                "country komt uit Salesinvoice.DeliveryCountry: het LEVERland, niet het "
+                "factuurland. Er bestaan facturen met een lege DeliveryCountry; die "
+                "vallen buiten elk country-filter, dus de som over alle landen is lager "
+                "dan het ongefilterde totaal.",
+                "'IC' bestaat twee keer met een andere betekenis: als business_unit "
+                "(intercompany) en als landcode (Canarische Eilanden). Niet verwisselen.",
+                "business_unit dekt niet alle klantgroepen: alleen ND (B2C), G2-G6 (B2B) "
+                "en INTC (IC) zijn gemapt. Groepen als G0, G1, G25 en VDM vallen buiten "
+                "elk business_unit-filter -- gebruik daarvoor customer_group.",
+                "Filterwaarden zijn codes zonder omschrijving. Welke dimensies een "
+                "specifieke tool accepteert staat in het argument-schema van die tool, "
+                "niet hier -- vraag het na met get_schema of lees de tool-beschrijving.",
+            ],
+            "beginnen_met": [
+                "Welke filterwaarden kan ik gebruiken? -> get_filter_options",
+                "Wat zijn de top 10 klanten dit jaar versus vorig jaar? -> get_top_customers",
+                "Wat is de marge per productgroep voor B2B? -> get_margin_report",
+                "Draait alles nog? -> health_check",
+            ],
+        }
 
     @mcp.tool()
     def health_check() -> dict:

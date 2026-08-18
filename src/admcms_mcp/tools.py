@@ -2573,11 +2573,15 @@ _FILTER_OPTIONS_TTL_SECONDS = 6 * 60 * 60
 
 # One query per data dimension. Kept independent so a slow/timing-out query on one
 # dimension (e.g. make) cannot discard the others' already-fetched values.
+# (key, column, sql-template with a {top} placeholder, default cap).
+# The cap is a template parameter rather than a literal so a caller can ask for
+# the complete set; get_filter_options reports per dimension whether the list it
+# returned was cut off.
 _FILTER_OPTION_DIMS = (
     (
         "customer_group",
         "CustSuppGroup",
-        "SELECT TOP (30) CustSuppGroup "
+        "SELECT TOP ({top}) CustSuppGroup "
         "FROM CUSTSUPPLIER "
         "WHERE CustSuppType = '1' AND CustSuppGroup IS NOT NULL "
         "GROUP BY CustSuppGroup "
@@ -2587,7 +2591,7 @@ _FILTER_OPTION_DIMS = (
     (
         "country",
         "DeliveryCountry",
-        "SELECT TOP (50) DeliveryCountry "
+        "SELECT TOP ({top}) DeliveryCountry "
         "FROM SALESINVOICE "
         "WHERE DeliveryCountry IS NOT NULL "
         "GROUP BY DeliveryCountry "
@@ -2597,7 +2601,7 @@ _FILTER_OPTION_DIMS = (
     (
         "make",
         "Make",
-        "SELECT TOP (100) Make "
+        "SELECT TOP ({top}) Make "
         "FROM PRODUCT "
         "WHERE Make IS NOT NULL "
         "GROUP BY Make "
@@ -2607,7 +2611,7 @@ _FILTER_OPTION_DIMS = (
     (
         "productgroup",
         "Productgroup",
-        "SELECT TOP (100) Productgroup "
+        "SELECT TOP ({top}) Productgroup "
         "FROM PRODUCT "
         "WHERE Productgroup IS NOT NULL "
         "GROUP BY Productgroup "
@@ -2615,6 +2619,10 @@ _FILTER_OPTION_DIMS = (
         100,
     ),
 )
+
+#: Ceiling for max_per_dim. High enough to return every distinct value these
+#: columns actually hold, low enough to stay a guard.
+_FILTER_OPTIONS_MAX_PER_DIM = 5000
 
 _filter_options_lock = threading.Lock()
 # {"data": <last result dict without business_unit/error>, "ts": <monotonic seconds>}.
@@ -2635,7 +2643,7 @@ def _reset_filter_options_cache() -> None:
         _filter_options_cache["ts"] = None
 
 
-def get_filter_options() -> dict[str, Any]:
+def get_filter_options(max_per_dim: int = 0) -> dict[str, Any]:
     """Return distinct values for each filter dimension (for building UI dropdowns).
 
     Backs the `filters` arg on get_revenue / get_margin_report / get_kpi_summary /
@@ -2654,19 +2662,37 @@ def get_filter_options() -> dict[str, Any]:
     are reused. A fully-successful result is cached for ``_FILTER_OPTIONS_TTL_SECONDS``
     so the expensive cold table scans run at most once per interval.
 
-    Returns `{customer_group, business_unit, country, make, productgroup}`, plus an
+    - max_per_dim: 0 (default) uses the per-dimension defaults, which are a top-N
+      on frequency and therefore possibly incomplete. Pass a higher number (up to
+      5000) to get every distinct value; the response always states which
+      dimensions were cut off.
+
+    Returns `{customer_group, business_unit, country, make, productgroup}`, plus
+    `complete` (bool), optionally `truncated_dimensions` + `truncated_hint`, and an
     `error` string listing any dimensions that failed on this refresh.
     """
+    caps = {
+        key: (
+            min(int(max_per_dim), _FILTER_OPTIONS_MAX_PER_DIM) if max_per_dim > 0 else default_cap
+        )
+        for key, _col, _sql, default_cap in _FILTER_OPTION_DIMS
+    }
+    # Only the default caps are cached; a caller asking for a wider set gets a
+    # fresh read rather than a trimmed cache entry served as if complete.
+    use_cache = max_per_dim <= 0
+
     now = time.monotonic()
     cached = _filter_options_cache["data"]
     fresh_since = _filter_options_cache["ts"]
     if (
-        cached is not None
+        use_cache
+        and cached is not None
         and fresh_since is not None
         and (now - fresh_since) < _FILTER_OPTIONS_TTL_SECONDS
     ):
-        result = {k: list(v) for k, v in cached.items()}
+        result = {k: list(v) for k, v in cached.items() if k != "_truncated"}
         result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
+        _annotate_filter_options(result, cached.get("_truncated") or [], caps)
         return result
 
     # Seed from last known-good so a transient failure keeps prior values.
@@ -2675,24 +2701,48 @@ def get_filter_options() -> dict[str, Any]:
         key: list(prev.get(key, [])) for key, _col, _sql, _cap in _FILTER_OPTION_DIMS
     }
     errors: dict[str, str] = {}
-    for key, col, sql, cap in _FILTER_OPTION_DIMS:
+    afgekapt: list[str] = []
+    for key, col, sql, _default_cap in _FILTER_OPTION_DIMS:
+        cap = caps[key]
         try:
-            rows = execute_query_params(sql, (), max_rows=cap)
+            # One over the cap: distinguishes "this is everything" from "there is
+            # more". Without it the list looks authoritative when it is not.
+            rows = execute_query_params(sql.format(top=cap + 1), (), max_rows=cap + 1)
             vals = [r.get(col) for r in rows if r.get(col) is not None]
+            if len(vals) > cap:
+                vals = vals[:cap]
+                afgekapt.append(key)
             if vals:
                 dims[key] = vals
         except Exception as e:  # noqa: BLE001 - one bad dim must not sink the rest
             logger.warning("get_filter_options: %s query failed: %s", key, e)
             errors[key] = str(e)
 
-    with _filter_options_lock:
-        _filter_options_cache["data"] = {k: list(v) for k, v in dims.items()}
-        # Only treat as fresh when every dimension succeeded; otherwise force a retry
-        # on the next call instead of caching a partial result for the full TTL.
-        _filter_options_cache["ts"] = now if not errors else None
+    if use_cache:
+        with _filter_options_lock:
+            _filter_options_cache["data"] = {k: list(v) for k, v in dims.items()}
+            _filter_options_cache["data"]["_truncated"] = list(afgekapt)
+            # Only treat as fresh when every dimension succeeded; otherwise force a
+            # retry on the next call instead of caching a partial result for the TTL.
+            _filter_options_cache["ts"] = now if not errors else None
 
     result: dict[str, Any] = {k: list(v) for k, v in dims.items()}
     result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
+    _annotate_filter_options(result, afgekapt, caps)
     if errors:
         result["error"] = "Execution error: " + "; ".join(f"{k}: {v}" for k, v in errors.items())
     return result
+
+
+def _annotate_filter_options(
+    result: dict[str, Any], afgekapt: list[str], caps: dict[str, int]
+) -> None:
+    """Say per dimension whether the list is complete, and how to get the rest."""
+    result["complete"] = not afgekapt
+    if afgekapt:
+        result["truncated_dimensions"] = {key: caps[key] for key in afgekapt}
+        result["truncated_hint"] = (
+            "Deze dimensies zijn afgekapt op de genoemde limiet en bevatten dus NIET "
+            "alle geldige filterwaarden. Roep get_filter_options(max_per_dim=1000) aan "
+            "voor de volledige set."
+        )

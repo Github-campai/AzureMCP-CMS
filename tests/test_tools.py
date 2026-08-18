@@ -1730,6 +1730,8 @@ class TestGetFilterOptions:
             "country",
             "make",
             "productgroup",
+            # Every response states whether the lists are the complete set.
+            "complete",
         }
         assert result["customer_group"] == ["ND", "G2"]
         assert result["business_unit"] == ["B2C", "B2B", "IC"]
@@ -2049,3 +2051,106 @@ class TestExcludeCreditsFlag:
         get_kpi_summary("2026-01-01", "2026-02-01", include_ly=False)
         header_sql = mock_execute.call_args_list[0][0][0]
         assert "InvoiceType" not in header_sql
+
+
+class TestFilterOptionsCompleteness:
+    """get_filter_options returned a top-N per dimension and said nothing about it.
+
+    A caller then built filter dicts from a list that looked authoritative but was
+    missing valid values.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        from admcms_mcp.tools import _reset_filter_options_cache
+
+        _reset_filter_options_cache()
+        yield
+        _reset_filter_options_cache()
+
+    @staticmethod
+    def _rows(column, count):
+        return [{column: f"{column[:2]}{i}"} for i in range(count)]
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_reports_complete_when_nothing_was_cut_off(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.side_effect = [
+            self._rows("CustSuppGroup", 3),
+            self._rows("DeliveryCountry", 4),
+            self._rows("Make", 5),
+            self._rows("Productgroup", 6),
+        ]
+        result = get_filter_options()
+        assert result["complete"] is True
+        assert "truncated_dimensions" not in result
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_flags_the_dimensions_that_were_cut_off(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        # country hits its default cap of 50, the rest do not.
+        mock_execute.side_effect = [
+            self._rows("CustSuppGroup", 3),
+            self._rows("DeliveryCountry", 51),
+            self._rows("Make", 5),
+            self._rows("Productgroup", 6),
+        ]
+        result = get_filter_options()
+        assert result["complete"] is False
+        assert result["truncated_dimensions"] == {"country": 50}
+        assert len(result["country"]) == 50, "must still trim to the cap"
+        assert "max_per_dim" in result["truncated_hint"]
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_max_per_dim_raises_the_cap(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.side_effect = [
+            self._rows("CustSuppGroup", 200),
+            self._rows("DeliveryCountry", 200),
+            self._rows("Make", 200),
+            self._rows("Productgroup", 200),
+        ]
+        result = get_filter_options(max_per_dim=1000)
+        assert result["complete"] is True
+        assert len(result["country"]) == 200, "default cap of 50 must not apply"
+        # The cap reaches the SQL, so the database does the limiting.
+        assert "TOP (1001)" in mock_execute.call_args_list[0][0][0]
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_max_per_dim_is_bounded(self, mock_execute):
+        from admcms_mcp.tools import _FILTER_OPTIONS_MAX_PER_DIM, get_filter_options
+
+        mock_execute.side_effect = [
+            self._rows("CustSuppGroup", 1),
+            self._rows("DeliveryCountry", 1),
+            self._rows("Make", 1),
+            self._rows("Productgroup", 1),
+        ]
+        get_filter_options(max_per_dim=10_000_000)
+        sql = mock_execute.call_args_list[0][0][0]
+        assert f"TOP ({_FILTER_OPTIONS_MAX_PER_DIM + 1})" in sql
+
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_a_widened_request_is_not_served_from_the_default_cache(self, mock_execute):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_execute.side_effect = [
+            self._rows("CustSuppGroup", 3),
+            self._rows("DeliveryCountry", 51),
+            self._rows("Make", 5),
+            self._rows("Productgroup", 6),
+        ] + [
+            self._rows("CustSuppGroup", 3),
+            self._rows("DeliveryCountry", 60),
+            self._rows("Make", 5),
+            self._rows("Productgroup", 6),
+        ]
+        first = get_filter_options()
+        assert first["complete"] is False
+
+        second = get_filter_options(max_per_dim=1000)
+        assert second["complete"] is True
+        assert len(second["country"]) == 60

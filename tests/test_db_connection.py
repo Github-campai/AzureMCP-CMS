@@ -35,7 +35,8 @@ class TestExecuteQuery:
 
         assert rows == [{"id": 1, "name": "foo"}, {"id": 2, "name": "bar"}]
         mock_cursor.execute.assert_called_once_with("SELECT id, name FROM foo")
-        mock_cursor.fetchmany.assert_called_once_with(10)
+        # cap + 1: the extra row is the truncation probe, trimmed before returning.
+        mock_cursor.fetchmany.assert_called_once_with(11)
 
     @patch("admcms_mcp.db._borrow")
     def test_execute_query_rejects_dangerous_query(self, mock_borrow):
@@ -44,7 +45,7 @@ class TestExecuteQuery:
         mock_borrow.assert_not_called()
 
     @patch("admcms_mcp.db._borrow")
-    def test_execute_query_caps_max_rows_at_500(self, mock_borrow):
+    def test_execute_query_caps_max_rows_at_the_hard_limit(self, mock_borrow):
         mock_cursor = MagicMock()
         mock_cursor.description = [("id", None)]
         mock_cursor.fetchmany.return_value = []
@@ -54,7 +55,9 @@ class TestExecuteQuery:
 
         execute_query("SELECT id FROM foo WHERE id = 987654321", max_rows=99999)
 
-        mock_cursor.fetchmany.assert_called_once_with(500)
+        from admcms_mcp.db import _MAX_ROWS_HARD_LIMIT
+
+        mock_cursor.fetchmany.assert_called_once_with(_MAX_ROWS_HARD_LIMIT + 1)
 
 
 class TestGetSchemaColumns:
@@ -117,7 +120,7 @@ class TestExecuteQueryParams:
         rows = execute_query_params("SELECT id FROM t WHERE x = ?", ("abc",), max_rows=5)
 
         mock_cursor.execute.assert_called_once_with("SELECT id FROM t WHERE x = ?", ("abc",))
-        mock_cursor.fetchmany.assert_called_once_with(5)
+        mock_cursor.fetchmany.assert_called_once_with(6)  # cap + truncation probe
         assert rows == [{"id": 42}]
 
     @patch("admcms_mcp.db._borrow")

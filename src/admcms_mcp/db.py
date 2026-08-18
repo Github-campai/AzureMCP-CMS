@@ -1,11 +1,13 @@
 """Database connection, query validation, and execution."""
 
 import logging
+import os
 import queue
 import re
 import threading
 import time
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from typing import Any
 
 import pyodbc
@@ -35,7 +37,31 @@ _DANGEROUS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_MAX_ROWS_HARD_LIMIT = 500
+# Safety valve against a runaway query, not a business cap. Callers asking for
+# more than this used to be silently clamped: get_shipping_cost_analysis asks for
+# 2000 and received 500 with no signal at all.
+_MAX_ROWS_HARD_LIMIT = int(os.environ.get("MAX_ROWS_HARD_LIMIT", "5000"))
+
+# Set whenever a result set was cut off. Read by the tool wrapper in server.py so
+# every response can say so, instead of a caller silently reasoning over a
+# partial answer. Reset per tool call.
+_truncated: ContextVar[bool] = ContextVar("query_truncated", default=False)
+
+
+def reset_truncation() -> None:
+    """Call at the start of a tool invocation."""
+    _truncated.set(False)
+
+
+def was_truncated() -> bool:
+    """True when any query in this tool call hit its row cap."""
+    return _truncated.get()
+
+
+def _note_truncation() -> None:
+    _truncated.set(True)
+
+
 # Line-grain aggregations over a 12-month range take ~60-75s on this DB; give
 # them room to finish rather than erroring at the ODBC timeout (App Service
 # idle timeout is ~230s, so stay well under that).
@@ -54,7 +80,8 @@ _pool_lock = threading.Lock()
 # heavy aggregates means only the FIRST load per (sql, params) pays the cost and
 # every subsequent tile/refresh within the TTL is instant.
 _QUERY_CACHE_TTL_SECONDS = 600
-_query_cache: dict[tuple, tuple[float, list]] = {}
+# (cached_at, rows, was_truncated)
+_query_cache: dict[tuple, tuple[float, list, bool]] = {}
 _query_cache_lock = threading.Lock()
 
 
@@ -62,13 +89,15 @@ def _cache_get(key: tuple) -> list | None:
     with _query_cache_lock:
         hit = _query_cache.get(key)
         if hit is not None and (time.monotonic() - hit[0]) < _QUERY_CACHE_TTL_SECONDS:
+            if hit[2]:
+                _note_truncation()
             return hit[1]
     return None
 
 
-def _cache_put(key: tuple, result: list) -> None:
+def _cache_put(key: tuple, result: list, truncated: bool = False) -> None:
     with _query_cache_lock:
-        _query_cache[key] = (time.monotonic(), result)
+        _query_cache[key] = (time.monotonic(), result, truncated)
 
 
 def validate_query(sql: str) -> None:
@@ -191,10 +220,16 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
         cursor = conn.cursor()
         cursor.execute(sql)
         columns = [col[0] for col in cursor.description] if cursor.description else []
-        rows = cursor.fetchmany(effective_rows)
+        # One extra row: the only way to know the set was cut off rather than
+        # simply exhausted.
+        rows = cursor.fetchmany(effective_rows + 1)
+    truncated = len(rows) > effective_rows
+    if truncated:
+        rows = rows[:effective_rows]
+        _note_truncation()
     result = [dict(zip(columns, row, strict=False)) for row in rows]
     _audit.record_sql(sql, None, int((time.monotonic() - _start) * 1000), len(result))
-    _cache_put(cache_key, result)
+    _cache_put(cache_key, result, truncated)
     return result
 
 
@@ -222,10 +257,14 @@ def execute_query_params(
         cursor = conn.cursor()
         cursor.execute(sql, params)
         columns = [col[0] for col in cursor.description] if cursor.description else []
-        rows = cursor.fetchmany(effective_rows)
+        rows = cursor.fetchmany(effective_rows + 1)
+    truncated = len(rows) > effective_rows
+    if truncated:
+        rows = rows[:effective_rows]
+        _note_truncation()
     result = [dict(zip(columns, row, strict=False)) for row in rows]
     _audit.record_sql(sql, params, int((time.monotonic() - _start) * 1000), len(result))
-    _cache_put(cache_key, result)
+    _cache_put(cache_key, result, truncated)
     return result
 
 
@@ -259,14 +298,18 @@ def get_distinct_values(table_name: str, column_name: str, top_n: int = 50) -> l
 
     effective_n = min(max(1, top_n), _MAX_ROWS_HARD_LIMIT)
     sql = (
-        f"SELECT DISTINCT TOP ({effective_n}) [{column_name}] "
+        f"SELECT DISTINCT TOP ({effective_n + 1}) [{column_name}] "
         f"FROM [{table_name}] "
         f"WHERE [{column_name}] IS NOT NULL"
     )
     with _borrow() as conn:
         cursor = conn.cursor()
         cursor.execute(sql)
-        return [row[0] for row in cursor.fetchall()]
+        values = [row[0] for row in cursor.fetchall()]
+    if len(values) > effective_n:
+        _note_truncation()
+        return values[:effective_n]
+    return values
 
 
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
