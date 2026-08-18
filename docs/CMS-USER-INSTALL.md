@@ -1,7 +1,7 @@
 # ADMCMS in Claude — installatie voor eindgebruikers
 
 Eenvoudige instructie voor CMS-medewerkers die de ADMCMS-database willen
-gebruiken via Claude Desktop. < 5 minuten.
+gebruiken via Claude. < 2 minuten.
 
 **Voorwaarden** (regelt jullie IT eenmalig):
 - Jouw Microsoft-account zit in de group `SG-CMS-MCP-Users`
@@ -9,39 +9,49 @@ gebruiken via Claude Desktop. < 5 minuten.
 
 ---
 
-## Stap 1 — Installeer Claude Desktop
+## De URL
 
-Download op https://claude.ai/download → installeer → log in met je Anthropic
-account (of maak er een gratis aan) → **open Claude Desktop minstens 1x**.
-
-## Stap 2 — Voeg de ADMCMS-server toe
-
-Open PowerShell (Windows-toets → "PowerShell" intypen → openen) en plak deze
-regel:
-
-```powershell
-iwr https://raw.githubusercontent.com/Github-campai/AzureMCP-CMS/main/scripts/install-mcp-claude.ps1 | iex
+```
+https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp
 ```
 
-Druk op Enter. Het script regelt alles, maakt een backup van je bestaande
-Claude-config (mocht je die hebben), en bevestigt aan het eind: ✅ klaar.
+Dat is alles wat je nodig hebt. Geen script, geen client-ID, geen configuratie-
+bestand: de server vertelt je AI-tool zelf hoe het inloggen werkt.
 
-## Stap 3 — Herstart Claude Desktop
+## Claude (web of desktop)
 
-**Volledig afsluiten** (rechtermuisklik op het Claude tray-icoon rechtsonder
-→ **Quit**), dan opnieuw openen. Een normale window-X close is niet genoeg.
+1. Ga naar **Settings → Connectors → Add custom connector**
+2. Plak de URL hierboven
+3. Klik **Add** → er opent een Microsoft-inlogvenster
+4. Log in met je **CMS-account** en klik **Accept** op "Read ADMCMS data"
 
-## Stap 4 — Eerste vraag
+Klaar. Vraag daarna bijvoorbeeld: *"Wat zijn onze top 10 klanten dit jaar?"*
 
-Begin een nieuw gesprek en typ bijvoorbeeld:
+## Claude Code (CLI)
 
-> *"Gebruik de admcms tool en haal de top 10 klanten van dit jaar op."*
+```bash
+claude mcp add --transport http admcms https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp
+```
 
-Er opent een browser-popup → log in met je **Microsoft-account van CMS** →
-klik **Accept** op de toestemming voor "Read ADMCMS data" → klaar.
+De eerste tool-aanroep opent de browser voor het inloggen.
 
-Vanaf nu werkt het — vraag wat je wilt over verkoop, klanten, marges, voorraad,
-leveringen.
+## Cursor
+
+Settings → MCP → **Add new MCP server** → type `http` → URL erin. Bij de eerste
+call volgt de inlogflow.
+
+## VS Code
+
+Settings → MCP → Servers → toevoegen:
+
+```json
+{
+  "admcms": {
+    "type": "http",
+    "url": "https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp"
+  }
+}
+```
 
 ---
 
@@ -58,65 +68,17 @@ leveringen.
 
 | Wat je ziet | Wat te doen |
 |---|---|
-| Script faalt op "Config niet gevonden" | Claude Desktop eerst 1x openen zodat de config wordt aangemaakt |
 | "Connection refused" / "Server not reachable" | Check je internet |
-| "Authorization failed" | Log uit en weer in bij Claude Desktop. Probeer opnieuw. |
-| "User not on allowlist" | Vraag je IT om je in `SG-CMS-MCP-Users` te zetten. |
-| "Admin consent required" | Vraag je IT om de éénmalige goedkeuring te geven. |
-| Geen popup verschijnt | Check pop-up blocker in je browser. |
+| `AADSTS50011` / "redirect URI mismatch" | Meld dit bij Campai — de callback van jouw client staat nog niet in de app-registratie |
+| "Admin consent required" | Vraag je IT om de éénmalige goedkeuring te geven |
+| "User not on allowlist" (403) | Vraag je IT om je in `SG-CMS-MCP-Users` te zetten |
+| "Authorization failed" na een uur | Log opnieuw in; normaal vernieuwt de sessie zichzelf |
+| Geen inlogvenster | Check je pop-up blocker |
 
 Hulp nodig? Stuur een mail naar **Janneke@campai.nl** met een screenshot van wat
 je ziet.
 
----
+## Copilot Studio
 
-## Handmatige installatie (als het script niet werkt)
-
-Open **Claude Desktop → Settings → Developer → Edit Config**. Een bestand
-`claude_desktop_config.json` opent. Voeg `mcpServers` toe **naast** de bestaande
-inhoud:
-
-```json
-{
-  "mcpServers": {
-    "admcms": {
-      "url": "https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp",
-      "transport": "http"
-    }
-  }
-}
-```
-
-Als er al andere keys staan (zoals `preferences`), voeg `mcpServers` toe als
-extra key (let op de komma):
-
-```json
-{
-  "preferences": { ...bestaande inhoud... },
-  "mcpServers": {
-    "admcms": {
-      "url": "https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp",
-      "transport": "http"
-    }
-  }
-}
-```
-
-Bewaar, herstart Claude Desktop volledig (zie stap 3 hierboven).
-
-## Alternatief: Cursor (voor developers)
-
-Settings → MCP → Add server →
-URL `https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp` →
-type `http`.
-
-## Alternatief: Claude Code (CLI)
-
-```bash
-claude mcp add admcms https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp --transport http
-```
-
-## Alternatief: Copilot Studio
-
-Vereist een custom connector setup door jullie IT/Power Platform admin.
-Configuratie staat in [`CLIENT-SETUP.md`](CLIENT-SETUP.md).
+Vereist een custom connector door jullie Power Platform admin — zie
+[`CLIENT-SETUP.md`](CLIENT-SETUP.md).

@@ -10,61 +10,22 @@ en jouw account zit in de security group die toegang heeft.
 | **Scope** | `admcms.read` |
 | **Resource (audience)** | `api://1e6983d3-f996-4581-9518-e6819b79ac6a` |
 
-## Claude Desktop
+## Alle MCP-clients: alleen de URL
 
-1. Open Claude Desktop
-2. Menu → Settings → Developer → "Edit Config"
-3. Voeg toe aan `mcpServers`:
+De server publiceert zijn eigen OAuth-metadata en ondersteunt dynamic client
+registration, dus geen enkele client heeft nog een client-ID, secret of
+proxy-script nodig. Overal geldt: voer de MCP-URL in, log in met je
+Microsoft-account, klaar.
 
-```json
-{
-  "mcpServers": {
-    "admcms": {
-      "url": "https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp",
-      "transport": "http"
-    }
-  }
-}
-```
+| Client | Waar |
+|---|---|
+| **Claude** (web/desktop) | Settings -> Connectors -> Add custom connector -> URL |
+| **Claude Code** | `claude mcp add --transport http admcms <URL>` |
+| **Cursor** | Settings -> MCP -> Add new MCP server -> type `http` |
+| **VS Code** | Settings -> MCP -> Servers -> `{"admcms": {"type": "http", "url": "<URL>"}}` |
 
-4. Restart Claude Desktop
-5. Bij de eerste vraag waarbij Claude de MCP wil gebruiken, opent een browser
-   voor Entra-login. Log in met je CMS-account, geef toestemming voor
-   `admcms.read`.
-6. Daarna werkt het — vraag bijvoorbeeld: *"Wat zijn onze top 10 klanten dit jaar?"*
-
-## Claude Code (CLI)
-
-```bash
-claude mcp add admcms https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp --transport http
-```
-
-Eerste call doet de OAuth flow in je browser.
-
-## Cursor
-
-1. Cursor → Settings → MCP
-2. **Add new MCP server**
-3. Name: `admcms`
-4. Type: `http`
-5. URL: `https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp`
-6. Bij eerste call: OAuth flow in browser
-
-## VS Code (MCP extension)
-
-1. Install de MCP extension (GitHub Copilot MCP support of equivalent)
-2. Settings → MCP → Servers → Add:
-
-```json
-{
-  "admcms": {
-    "transport": {
-      "type": "http",
-      "url": "https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp"
-    }
-  }
-}
-```
+Bij de eerste tool-aanroep opent de Entra-inlogflow. De sessie vernieuwt zichzelf
+daarna via de refresh token, dus geen herhaald inloggen elk uur.
 
 ## Copilot Studio (custom connector)
 
