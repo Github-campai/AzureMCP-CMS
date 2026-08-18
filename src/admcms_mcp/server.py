@@ -1,5 +1,6 @@
 """HTTP server: Starlette app with MCP Streamable HTTP + Entra JWT auth."""
 
+import html
 import logging
 from contextlib import asynccontextmanager
 
@@ -200,66 +201,76 @@ _INDEX_HTML = """<!doctype html>
 </html>"""
 
 
+def _page(
+    *, title: str, badge_class: str, badge_text: str, body: str, status_code: int = 200
+) -> HTMLResponse:
+    """Render the status page.
+
+    `_INDEX_HTML` is a module constant and every caller-supplied value that came
+    from the request is escaped with `html.escape` before it reaches `body`, so
+    the format call cannot introduce markup.
+    """
+    # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
+    # nosemgrep: python.flask.security.audit.directly-returned-format-string.directly-returned-format-string
+    return HTMLResponse(
+        _INDEX_HTML.format(title=title, badge_class=badge_class, badge_text=badge_text, body=body),
+        status_code=status_code,
+    )
+
+
 async def index(request: Request) -> HTMLResponse:
     params = request.query_params
     if params.get("admin_consent") == "True":
-        tenant = params.get("tenant", "")
+        # Entra puts the tenant id in the query string; escape it rather than
+        # reflecting attacker-controlled markup back into the page.
+        tenant = html.escape(params.get("tenant", ""))
         tenant_html = f"<p>Tenant: <code>{tenant}</code></p>" if tenant else ""
-        body = (
-            "<p>De CMS-MCP-API is succesvol toegevoegd aan jullie Microsoft Entra "
-            "tenant. Gebruikers in de bijbehorende security group kunnen nu via "
-            "Claude, Copilot of Cursor de ADMCMS-data bevragen.</p>"
-            f"{tenant_html}"
-            "<p>Je kunt dit venster nu sluiten.</p>"
-        )
-        return HTMLResponse(
-            _INDEX_HTML.format(
-                title="Consent verleend",
-                badge_class="ok",
-                badge_text="Geslaagd",
-                body=body,
-            )
+        return _page(
+            title="Consent verleend",
+            badge_class="ok",
+            badge_text="Geslaagd",
+            body=(
+                "<p>De CMS-MCP-API is succesvol toegevoegd aan jullie Microsoft Entra "
+                "tenant. Gebruikers in de bijbehorende security group kunnen nu via "
+                "Claude, Copilot of Cursor de ADMCMS-data bevragen.</p>"
+                f"{tenant_html}"
+                "<p>Je kunt dit venster nu sluiten.</p>"
+            ),
         )
     if "error" in params:
-        err = params.get("error", "")
-        desc = params.get("error_description", "")
-        body = (
-            "<p>Microsoft Entra heeft de aanvraag afgewezen.</p>"
-            f"<p><strong>Error:</strong> <code>{err}</code></p>"
-            f"<p><strong>Detail:</strong> {desc}</p>"
-            "<p>Neem contact op met Campai (<a href='mailto:Janneke@campai.nl'>"
-            "Janneke@campai.nl</a>) als dit blijft optreden.</p>"
-        )
-        return HTMLResponse(
-            _INDEX_HTML.format(
-                title="Consent mislukt",
-                badge_class="info",
-                badge_text="Fout",
-                body=body,
-            ),
-            status_code=400,
-        )
-    body = (
-        "<p>Dit is de MCP-server voor de ADMCMS-database, gehost door Campai "
-        "voor CMS Lelystad.</p>"
-        "<p>Endpoints:</p>"
-        "<ul>"
-        "<li><code>POST /mcp</code> &mdash; MCP Streamable HTTP (Bearer JWT vereist)</li>"
-        "<li><code>GET /healthz</code> &mdash; health check</li>"
-        "<li><code>GET /.well-known/oauth-protected-resource</code> &mdash; OAuth metadata</li>"
-        "<li><code>GET /admin/tools</code> &mdash; tool registry (Bearer JWT)</li>"
-        "</ul>"
-        "<p>Voor toegang: configureer Claude/Copilot/Cursor met deze server-URL. "
-        "Documentatie: <a href='https://github.com/Github-campai/AzureMCP-CMS'>"
-        "github.com/Github-campai/AzureMCP-CMS</a></p>"
-    )
-    return HTMLResponse(
-        _INDEX_HTML.format(
-            title="ADMCMS MCP",
+        err = html.escape(params.get("error", ""))
+        desc = html.escape(params.get("error_description", ""))
+        return _page(
+            title="Consent mislukt",
             badge_class="info",
-            badge_text="Actief",
-            body=body,
+            badge_text="Fout",
+            status_code=400,
+            body=(
+                "<p>Microsoft Entra heeft de aanvraag afgewezen.</p>"
+                f"<p><strong>Error:</strong> <code>{err}</code></p>"
+                f"<p><strong>Detail:</strong> {desc}</p>"
+                "<p>Neem contact op met Campai (<a href='mailto:Janneke@campai.nl'>"
+                "Janneke@campai.nl</a>) als dit blijft optreden.</p>"
+            ),
         )
+    return _page(
+        title="ADMCMS MCP",
+        badge_class="info",
+        badge_text="Actief",
+        body=(
+            "<p>Dit is de MCP-server voor de ADMCMS-database, gehost door Campai "
+            "voor CMS Lelystad.</p>"
+            "<p>Endpoints:</p>"
+            "<ul>"
+            "<li><code>POST /mcp</code> &mdash; MCP Streamable HTTP (Bearer JWT vereist)</li>"
+            "<li><code>GET /healthz</code> &mdash; health check</li>"
+            "<li><code>GET /.well-known/oauth-protected-resource</code> &mdash; OAuth metadata</li>"
+            "<li><code>GET /admin/tools</code> &mdash; tool registry (Bearer JWT)</li>"
+            "</ul>"
+            "<p>Voor toegang: configureer Claude/Copilot/Cursor met deze server-URL. "
+            "Documentatie: <a href='https://github.com/Github-campai/AzureMCP-CMS'>"
+            "github.com/Github-campai/AzureMCP-CMS</a></p>"
+        ),
     )
 
 

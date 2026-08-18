@@ -104,3 +104,28 @@ async def test_auth_disabled_bypasses_check(app_client, monkeypatch):
             headers={"Accept": "application/json, text/event-stream"},
         )
     assert response.status_code != 401
+
+
+async def test_index_escapes_reflected_query_parameters(app_client):
+    """The consent-callback page reflects Entra's query string back at the user."""
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/", params={"admin_consent": "True", "tenant": "<script>alert(1)</script>"}
+        )
+    assert response.status_code == 200
+    assert "<script>alert(1)</script>" not in response.text
+    assert "&lt;script&gt;" in response.text
+
+
+async def test_index_escapes_error_parameters(app_client):
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/",
+            params={
+                "error": "<img src=x onerror=alert(1)>",
+                "error_description": "<b>nope</b>",
+            },
+        )
+    assert response.status_code == 400
+    assert "<img src=x" not in response.text
+    assert "<b>nope</b>" not in response.text

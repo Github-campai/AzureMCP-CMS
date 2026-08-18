@@ -252,6 +252,9 @@ async def token_proxy(request: Request) -> Response:
     if upstream.status_code >= 400:
         # Never log `code`, `refresh_token` or any secret the client sent.
         logged = {k: v for k, v in body.items() if k in ("grant_type", "client_id", "scope")}
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+        # `logged` is whitelisted above; code / refresh_token / client_secret never
+        # reach the log.
         logger.warning("Entra token endpoint returned %s for %s", upstream.status_code, logged)
 
     return Response(
