@@ -7,6 +7,7 @@ on:
       - 'src/**'
       - 'Dockerfile'
       - 'pyproject.toml'
+      - 'uv.lock'
       - '.github/workflows/deploy-to-aca.yml'
   workflow_dispatch:
     inputs:
@@ -28,7 +29,14 @@ env:
   IMAGE_NAME: admcms-mcp
 
 jobs:
+  # Reuses ci.yml instead of duplicating it. Without this gate the deploy raced
+  # its own test run: a push to main built and shipped an image even when lint,
+  # tests or pip-audit were failing on that very commit.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build-and-deploy:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -77,17 +85,50 @@ jobs:
             --image "${{ steps.targets.outputs.login_server }}/${IMAGE_NAME}:${IMAGE_TAG}" \
             --output none
 
-      - name: Smoke test
+      - name: Resolve public hostname
+        id: host
         run: |
           FQDN=$(az containerapp show \
             --name "${{ steps.targets.outputs.app }}" \
             --resource-group "${{ steps.targets.outputs.rg }}" \
             --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
           echo "Deployed to: https://$FQDN"
+
+      # The published OAuth metadata has to name the URL clients actually connect
+      # to. Set the PUBLIC_BASE_URL repo variable once a custom domain fronts the
+      # app; otherwise the Container Apps FQDN is used. Idempotent, so a deploy
+      # that changes nothing does not spawn an extra revision.
+      - name: Ensure PUBLIC_BASE_URL matches the public hostname
+        env:
+          PUBLIC_BASE_URL_VAR: ${{ vars.PUBLIC_BASE_URL }}
+          FQDN: ${{ steps.host.outputs.fqdn }}
+        run: |
+          WANTED="${PUBLIC_BASE_URL_VAR:-https://$FQDN}"
+          CURRENT=$(az containerapp show \
+            --name "${{ steps.targets.outputs.app }}" \
+            --resource-group "${{ steps.targets.outputs.rg }}" \
+            --query "properties.template.containers[0].env[?name=='PUBLIC_BASE_URL'].value | [0]" \
+            -o tsv)
+          if [ "$CURRENT" = "$WANTED" ]; then
+            echo "PUBLIC_BASE_URL already $WANTED"
+          else
+            echo "PUBLIC_BASE_URL: '$CURRENT' -> '$WANTED'"
+            az containerapp update \
+              --name "${{ steps.targets.outputs.app }}" \
+              --resource-group "${{ steps.targets.outputs.rg }}" \
+              --set-env-vars "PUBLIC_BASE_URL=$WANTED" \
+              --output none
+          fi
+
+      - name: Smoke test
+        env:
+          FQDN: ${{ steps.host.outputs.fqdn }}
+        run: |
           for i in 1 2 3 4 5; do
             STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "https://$FQDN/healthz" || echo "000")
             if [ "$STATUS" = "200" ]; then
-              echo "✓ /healthz returned 200"
+              echo "/healthz returned 200"
               exit 0
             fi
             echo "Attempt $i: got $STATUS, retrying in 10s..."
@@ -95,3 +136,78 @@ jobs:
           done
           echo "::error::Health check did not return 200 after 5 attempts"
           exit 1
+
+      # /healthz says nothing about whether anyone can still log in. These are the
+      # exact steps an MCP client walks when all it has is the URL.
+      - name: Verify the OAuth discovery chain
+        env:
+          FQDN: ${{ steps.host.outputs.fqdn }}
+        run: |
+          BASE="https://$FQDN"
+          fail=0
+
+          for path in \
+            "/.well-known/oauth-protected-resource" \
+            "/.well-known/oauth-protected-resource/mcp" \
+            "/.well-known/oauth-authorization-server" \
+            "/.well-known/oauth-authorization-server/mcp"
+          do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE$path" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "OK   $path"
+            else
+              echo "::error::$path returned $code (expected 200)"
+              fail=1
+            fi
+          done
+
+          # The 401 must carry a WWW-Authenticate pointing at https metadata.
+          challenge=$(curl -sS -D - -o /dev/null -X POST "$BASE/mcp" \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+            | tr -d '\r' | grep -i '^www-authenticate:' || true)
+          if [ -z "$challenge" ]; then
+            echo "::error::no WWW-Authenticate header on unauthenticated /mcp"
+            fail=1
+          elif echo "$challenge" | grep -q 'resource_metadata="https://'; then
+            echo "OK   challenge advertises https metadata"
+          else
+            echo "::error::challenge lacks an https resource_metadata: $challenge"
+            fail=1
+          fi
+
+          # Dynamic client registration is what lets a client start the flow at all.
+          reg=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "$BASE/register" \
+            -H 'content-type: application/json' \
+            -d '{"client_name":"deploy-check","redirect_uris":["http://localhost"]}' || echo 000)
+          if [ "$reg" = "201" ]; then
+            echo "OK   /register"
+          else
+            echo "::error::/register returned $reg (expected 201)"
+            fail=1
+          fi
+
+          # An unauthenticated GET must not be able to hold an SSE stream open.
+          getcode=$(curl -sS -m 10 -o /dev/null -w "%{http_code}" "$BASE/mcp" \
+            -H 'accept: text/event-stream' || echo 000)
+          if [ "$getcode" = "401" ]; then
+            echo "OK   unauthenticated GET /mcp rejected"
+          else
+            echo "::error::unauthenticated GET /mcp returned $getcode (expected 401)"
+            fail=1
+          fi
+
+          if [ "$fail" != "0" ]; then
+            exit 1
+          fi
+          echo "OAuth discovery chain OK"
+
+      - name: Rollback hint
+        if: failure()
+        run: |
+          APP="${{ steps.targets.outputs.app }}"
+          RG="${{ steps.targets.outputs.rg }}"
+          echo "::warning::Deploy or verification failed. Traffic stays on the last healthy revision."
+          echo "Revisions:  az containerapp revision list -n $APP -g $RG -o table"
+          echo "Roll back:  az containerapp ingress traffic set -n $APP -g $RG --revision-weight <previous-revision>=100"

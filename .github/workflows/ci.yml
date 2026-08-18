@@ -10,6 +10,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Called by deploy-to-aca.yml so a deploy cannot outrun its own test run.
+  workflow_call:
 
 permissions:
   contents: read

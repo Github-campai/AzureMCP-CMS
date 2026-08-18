@@ -11,6 +11,15 @@ param authDisabled bool
 param admcmsServer string
 param admcmsDatabase string
 
+@description('Externally-visible base URL, e.g. https://admcms.example.com. Empty = derive from the ingress X-Forwarded-* headers. The deploy workflow keeps this in sync with the live hostname, so a bicep re-run no longer drops it.')
+param publicBaseUrl string = ''
+
+@description('Entra authority the OAuth proxy sends users to. organizations = any work/school tenant; validate_jwt still rejects tenants outside entraAllowedTenants.')
+param entraAuthority string = 'organizations'
+
+@description('Escape hatch for the Copilot Studio preview connector: allow unauthenticated GET on /mcp. Leave false — it lets anyone hold an SSE stream open.')
+param allowUnauthenticatedMcpGet bool = false
+
 @description('Container image to deploy. Bootstrap script seeds a hello-world placeholder; CI updates it on every push.')
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
@@ -253,6 +262,18 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'ADMCMS_DATABASE'
               value: admcmsDatabase
+            }
+            {
+              name: 'PUBLIC_BASE_URL'
+              value: publicBaseUrl
+            }
+            {
+              name: 'ENTRA_AUTHORITY'
+              value: entraAuthority
+            }
+            {
+              name: 'ALLOW_UNAUTHENTICATED_MCP_GET'
+              value: string(allowUnauthenticatedMcpGet)
             }
             {
               name: 'AUDIT_STORE'

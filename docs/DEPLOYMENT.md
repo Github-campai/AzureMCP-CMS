@@ -301,3 +301,52 @@ az containerapp update -n $APP -g $RG --set-env-vars "PUBLIC_BASE_URL=https://ad
 De laatste regel is niet optioneel: zonder `PUBLIC_BASE_URL` blijft de
 OAuth-metadata naar de oude hostname wijzen en klopt de `resource` niet meer met
 de URL waarop de gebruiker verbindt.
+
+
+---
+
+## Deployen via GitHub Actions
+
+Push naar `main` (of Actions -> "Deploy CMS-MCP to Azure Container Apps" -> Run
+workflow). De workflow doet alles zelf; er is geen `az`-commando op een laptop
+meer nodig.
+
+| Stap | Wat het doet |
+|---|---|
+| `ci` | Roept `ci.yml` aan: ruff, pytest, pip-audit, import-check. **Faalt dit, dan wordt er niet gebouwd.** |
+| Build image in ACR | `az acr build` cloud-side, tag = eerste 8 tekens van de SHA |
+| Update Container App | Nieuwe revisie met die image |
+| Ensure `PUBLIC_BASE_URL` | Zet de env var gelijk aan de publieke hostname (idempotent) |
+| Smoke test | `/healthz` moet 200 geven |
+| Verify OAuth discovery chain | Loopt de stappen die een client zet: 4x well-known metadata, de 401-challenge met https-`resource_metadata`, `/register` -> 201, en een ongeauthenticeerde GET op `/mcp` -> 401 |
+| Rollback hint | Alleen bij falen: print de commando's om terug te rollen |
+
+Die laatste verificatie zit erin omdat `/healthz` niets zegt over of iemand nog
+kan inloggen. Een stille regressie in de metadata of de challenge maakt de server
+onbruikbaar voor elke client terwijl de health check groen blijft.
+
+### Custom domain via Actions
+
+Zet de repo-variabele `PUBLIC_BASE_URL` (Settings -> Secrets and variables ->
+Actions -> Variables), bijvoorbeeld `https://admcms.campai.nl`. Elke volgende
+deploy zet die waarde op de Container App. Zonder de variabele valt de workflow
+terug op de Container Apps-hostname.
+
+De DNS- en certificaatstappen staan hierboven onder "Custom domain (optioneel)".
+
+### Terugrollen
+
+Traffic blijft op de laatste gezonde revisie staan als een nieuwe revisie niet
+gezond wordt. Handmatig terug:
+
+```powershell
+az containerapp revision list -n cms-mcp-app-prod -g CMS-MCP-rg-prod -o table
+az containerapp ingress traffic set -n cms-mcp-app-prod -g CMS-MCP-rg-prod `
+  --revision-weight <vorige-revisie>=100
+```
+
+### Let op: `dev` bestaat niet
+
+`workflow_dispatch` heeft een `dev`-optie, maar er is geen resource group
+`CMS-MCP-rg-dev`. Die keuze faalt met "No ACR found in CMS-MCP-rg-dev". Bootstrap
+eerst met `scripts/bootstrap-all.ps1` als je een dev-omgeving wilt.
