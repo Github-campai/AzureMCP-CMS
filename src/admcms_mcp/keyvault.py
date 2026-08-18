@@ -44,14 +44,14 @@ def get_secret(name: str) -> str:
     """
     override = _env_override(name)
     if override is not None:
-        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         # Logs the secret NAME, never its value.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.info("Using env var override for secret %s (local dev)", name)
         return override
 
     client = _client()
     secret = client.get_secret(name)
-    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     # Logs the secret NAME, never its value.
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.debug("Fetched secret %s from Key Vault", name)
     return secret.value or ""

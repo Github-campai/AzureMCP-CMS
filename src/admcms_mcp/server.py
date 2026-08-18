@@ -210,9 +210,9 @@ def _page(
     from the request is escaped with `html.escape` before it reaches `body`, so
     the format call cannot introduce markup.
     """
-    # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
     # nosemgrep: python.flask.security.audit.directly-returned-format-string.directly-returned-format-string
     return HTMLResponse(
+        # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
         _INDEX_HTML.format(title=title, badge_class=badge_class, badge_text=badge_text, body=body),
         status_code=status_code,
     )

@@ -93,7 +93,7 @@ $env:KEY_VAULT_URI = "https://dummy.vault.azure.net/"
 $env:ENTRA_APP_ID = "dummy"
 $env:ENTRA_ALLOWED_TENANTS = "dummy"
 $env:ADMCMS_DB_USERNAME = "saazuredb"
-$env:ADMCMS_DB_PASSWORD = "GKyT62qMKAJVepJS4g8kMKI0"
+$env:ADMCMS_DB_PASSWORD = "<zie Key Vault: cms-mcp-kv-prod / admcms-db-password>"
 uvicorn admcms_mcp.server:app --port 8000
 ```
 
@@ -119,7 +119,7 @@ KEY_VAULT_URI=https://dummy.vault.azure.net/ \
 ENTRA_APP_ID=dummy \
 ENTRA_ALLOWED_TENANTS=dummy \
 ADMCMS_DB_USERNAME=saazuredb \
-ADMCMS_DB_PASSWORD=GKyT62qMKAJVepJS4g8kMKI0 \
+ADMCMS_DB_PASSWORD=<zie-key-vault> \
 uvicorn admcms_mcp.server:app --port 8000
 ```
 
@@ -372,7 +372,7 @@ $env:KEY_VAULT_URI = "https://dummy.vault.azure.net/"
 $env:ENTRA_APP_ID = "dummy"
 $env:ENTRA_ALLOWED_TENANTS = "dummy"
 $env:ADMCMS_DB_USERNAME = "saazuredb"
-$env:ADMCMS_DB_PASSWORD = "<password>"
+$env:ADMCMS_DB_PASSWORD = "<zie Key Vault: cms-mcp-kv-prod / admcms-db-password>"
 uvicorn admcms_mcp.server:app --port 8000
 ```
 Wacht op `StreamableHTTP session manager started` + `Application startup complete`.
