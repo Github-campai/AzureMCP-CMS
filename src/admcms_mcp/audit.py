@@ -51,9 +51,9 @@ class SqlCall:
 class AuditEntry:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: str = field(
-        default_factory=lambda: datetime.now(UTC)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
+        default_factory=lambda: (
+            datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        )
     )
     tool_name: str = ""
     args: dict[str, Any] = field(default_factory=dict)
@@ -118,9 +118,7 @@ def audit_call(tool_name: str, args: dict[str, Any]):
             logger.exception("Failed to write audit entry for %s", tool_name)
 
 
-def record_sql(
-    sql: str, params: tuple | list | None, duration_ms: int, row_count: int
-) -> None:
+def record_sql(sql: str, params: tuple | list | None, duration_ms: int, row_count: int) -> None:
     """Register an executed SQL call against the active audit entry.
 
     No-op if there is no active audit context (e.g. direct CLI/script use).

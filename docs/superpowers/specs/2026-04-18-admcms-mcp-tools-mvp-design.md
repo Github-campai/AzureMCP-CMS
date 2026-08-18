@@ -54,9 +54,9 @@ tests/
 Converteert ISO datum naar ADMCMS `char(8)`:
 
 ```python
-admcms_date("2026-04-18")   # -> "20260418"
-admcms_date("2026-04-1")    # -> ValueError("Invalid ISO date...")
-admcms_date("nonsense")     # -> ValueError("Invalid ISO date...")
+admcms_date("2026-04-18")  # -> "20260418"
+admcms_date("2026-04-1")  # -> ValueError("Invalid ISO date...")
+admcms_date("nonsense")  # -> ValueError("Invalid ISO date...")
 ```
 
 Accepteert alleen het exacte formaat `YYYY-MM-DD` (10 chars). Geen locale-tolerantie.
@@ -66,8 +66,8 @@ Accepteert alleen het exacte formaat `YYYY-MM-DD` (10 chars). Geen locale-tolera
 Retourneert SQL-fragment en parameters voor concatenatie:
 
 ```python
-company_filter(None)       # -> ("", ())
-company_filter("CMS001")   # -> (" AND Company = ?", ("CMS001",))
+company_filter(None)  # -> ("", ())
+company_filter("CMS001")  # -> (" AND Company = ?", ("CMS001",))
 ```
 
 Kolom-naam `Company` is de aanname — implementer verifieert tegen SCHEMA_KNOWLEDGE of live DB. Als de echte kolom anders heet (`Mandant`, `CompanyCode`, etc.), past implementer de helper eenmalig aan — alle tools gebruiken dezelfde helper.
@@ -77,9 +77,9 @@ Kolom-naam `Company` is de aanname — implementer verifieert tegen SCHEMA_KNOWL
 Escapet LIKE-metacharacters zodat gebruikers-input niet per ongeluk patronen matcht:
 
 ```python
-sanitize_like("50%")        # -> "50[%]"
-sanitize_like("item_3")     # -> "item[_]3"
-sanitize_like("a[b]")       # -> "a[[]b]"
+sanitize_like("50%")  # -> "50[%]"
+sanitize_like("item_3")  # -> "item[_]3"
+sanitize_like("a[b]")  # -> "a[[]b]"
 ```
 
 T-SQL gebruikt `[...]` character classes om metacharacters te escapen (niet backslash). Daarna wrap caller zelf `%term%` voor wildcard-matching.
@@ -89,9 +89,11 @@ T-SQL gebruikt `[...]` character classes om metacharacters te escapen (niet back
 Consistente shape:
 
 ```python
-{"data": [...],       # altijd list
- "summary": {...},    # tool-specifieke dict of None
- "error": "..."}      # string of None
+{
+    "data": [...],  # altijd list
+    "summary": {...},  # tool-specifieke dict of None
+    "error": "...",
+}  # string of None
 ```
 
 ## 5. Tool Specs

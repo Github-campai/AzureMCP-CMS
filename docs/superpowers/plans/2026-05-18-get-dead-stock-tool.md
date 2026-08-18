@@ -58,6 +58,7 @@ class TestSubtractMonths:
 
     def test_raises_on_invalid_iso(self):
         import pytest
+
         with pytest.raises(ValueError):
             subtract_months("not-a-date", 1)
 ```
@@ -141,22 +142,49 @@ class TestGetDeadStockValidation:
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_clamps_months_without_sale_high(self, mock_execute):
-        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
-                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        mock_execute.side_effect = [
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [],
+        ]
         result = get_dead_stock(months_without_sale=999)
         assert result["summary"]["months_without_sale"] == 60
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_clamps_months_without_sale_low(self, mock_execute):
-        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
-                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        mock_execute.side_effect = [
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [],
+        ]
         result = get_dead_stock(months_without_sale=0)
         assert result["summary"]["months_without_sale"] == 1
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_clamps_negative_min_stock_value(self, mock_execute):
-        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
-                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        mock_execute.side_effect = [
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [],
+        ]
         result = get_dead_stock(min_stock_value=-50.0)
         assert result["summary"]["min_stock_value"] == 0.0
 ```
@@ -203,10 +231,7 @@ def get_dead_stock(
     if group_by not in _DEAD_STOCK_GROUP_BY:
         return format_response(
             data=[],
-            error=(
-                f"Invalid group_by: {group_by!r}; "
-                f"must be one of {list(_DEAD_STOCK_GROUP_BY)}"
-            ),
+            error=(f"Invalid group_by: {group_by!r}; must be one of {list(_DEAD_STOCK_GROUP_BY)}"),
         )
 
     try:
@@ -286,20 +311,28 @@ class TestGetDeadStockPerProduct:
     def test_returns_dead_products_with_expected_shape(self, mock_execute):
         # Two calls: 1) summary query, 2) paged data query
         mock_execute.side_effect = [
-            [{"total_dead_value": 5000.0, "total_dead_count": 12,
-              "never_sold_value": 250.0, "never_sold_count": 3}],
-            [{
-                "Productcode": "MAH-001",
-                "Description": "Oil filter",
-                "Make": "MAHLE",
-                "Productgroup": "HOD",
-                "Warehouse": "CM",
-                "ActualStock": 47,
-                "ActualStockValue": 1245.30,
-                "CostPrice": 26.50,
-                "LastSaleDate": "2024-02-14",
-                "days_since_sale": 824,
-            }],
+            [
+                {
+                    "total_dead_value": 5000.0,
+                    "total_dead_count": 12,
+                    "never_sold_value": 250.0,
+                    "never_sold_count": 3,
+                }
+            ],
+            [
+                {
+                    "Productcode": "MAH-001",
+                    "Description": "Oil filter",
+                    "Make": "MAHLE",
+                    "Productgroup": "HOD",
+                    "Warehouse": "CM",
+                    "ActualStock": 47,
+                    "ActualStockValue": 1245.30,
+                    "CostPrice": 26.50,
+                    "LastSaleDate": "2024-02-14",
+                    "days_since_sale": 824,
+                }
+            ],
         ]
         result = get_dead_stock(months_without_sale=12, min_stock_value=100.0)
         assert result["error"] is None
@@ -318,8 +351,14 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_default_excludes_inactive_warehouses(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
             [],
         ]
         get_dead_stock()
@@ -331,8 +370,14 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_include_inactive_warehouses_omits_filter(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
             [],
         ]
         get_dead_stock(include_inactive_warehouses=True)
@@ -342,13 +387,29 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_paging_summary_reflects_full_page(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
-            [{"Productcode": f"P{i}", "Description": "x", "Make": "x",
-              "Productgroup": "x", "Warehouse": "CM", "ActualStock": 1,
-              "ActualStockValue": 1.0, "CostPrice": 1.0,
-              "LastSaleDate": "2024-01-01", "days_since_sale": 800}
-             for i in range(5)],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [
+                {
+                    "Productcode": f"P{i}",
+                    "Description": "x",
+                    "Make": "x",
+                    "Productgroup": "x",
+                    "Warehouse": "CM",
+                    "ActualStock": 1,
+                    "ActualStockValue": 1.0,
+                    "CostPrice": 1.0,
+                    "LastSaleDate": "2024-01-01",
+                    "days_since_sale": 800,
+                }
+                for i in range(5)
+            ],
         ]
         result = get_dead_stock(limit=5)
         assert result["summary"]["has_more"] is True
@@ -358,9 +419,16 @@ class TestGetDeadStockPerProduct:
     def test_cutoff_date_is_today_minus_months(self, mock_execute):
         import datetime as _dt
         from admcms_mcp.query_helpers import subtract_months
+
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
             [],
         ]
         result = get_dead_stock(months_without_sale=6)
@@ -390,9 +458,7 @@ def _dead_stock_ctes(include_inactive_warehouses: bool) -> tuple[str, list[str]]
     the warehouse-include flag).
     """
     warehouse_clause = (
-        ""
-        if include_inactive_warehouses
-        else " AND pw.Warehouse NOT IN ('OS','SA','DM')"
+        "" if include_inactive_warehouses else " AND pw.Warehouse NOT IN ('OS','SA','DM')"
     )
     cte_sql = (
         "WITH last_sale AS ("
@@ -418,8 +484,7 @@ def _dead_stock_ctes(include_inactive_warehouses: bool) -> tuple[str, list[str]]
 def _dead_stock_summary_sql(include_inactive_warehouses: bool) -> str:
     cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
     return (
-        cte_sql
-        + "SELECT "
+        cte_sql + "SELECT "
         "  SUM(CASE WHEN ls.LastSaleDate < ? THEN s.ActualStockValue ELSE 0 END) "
         "    AS total_dead_value, "
         "  COUNT(DISTINCT CASE WHEN ls.LastSaleDate < ? THEN s.Productcode END) "
@@ -436,8 +501,7 @@ def _dead_stock_summary_sql(include_inactive_warehouses: bool) -> str:
 def _dead_stock_main_sql_per_product(include_inactive_warehouses: bool) -> str:
     cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
     return (
-        cte_sql
-        + "SELECT s.Productcode, p.Description, p.Make, p.Productgroup, "
+        cte_sql + "SELECT s.Productcode, p.Description, p.Make, p.Productgroup, "
         "       s.Warehouse, s.ActualStock, s.ActualStockValue, s.CostPrice, "
         "       ls.LastSaleDate, "
         "       DATEDIFF(day, ls.LastSaleDate, GETDATE()) AS days_since_sale "
@@ -452,27 +516,33 @@ def _dead_stock_main_sql_per_product(include_inactive_warehouses: bool) -> str:
 Now replace the `# SQL execution wired up in Task 3.` block in `get_dead_stock` with:
 
 ```python
-        summary_sql = _dead_stock_summary_sql(include_inactive_warehouses)
-        # Params: min_stock_value (stock CTE), cutoff (×2 in CASE WHEN)
-        summary_params = (effective_min_value, cutoff_date, cutoff_date)
-        totals_rows = execute_query_params(summary_sql, summary_params, max_rows=1)
-        totals = totals_rows[0] if totals_rows else {
-            "total_dead_value": 0, "total_dead_count": 0,
-            "never_sold_value": 0, "never_sold_count": 0,
-        }
+summary_sql = _dead_stock_summary_sql(include_inactive_warehouses)
+# Params: min_stock_value (stock CTE), cutoff (×2 in CASE WHEN)
+summary_params = (effective_min_value, cutoff_date, cutoff_date)
+totals_rows = execute_query_params(summary_sql, summary_params, max_rows=1)
+totals = (
+    totals_rows[0]
+    if totals_rows
+    else {
+        "total_dead_value": 0,
+        "total_dead_count": 0,
+        "never_sold_value": 0,
+        "never_sold_count": 0,
+    }
+)
 
-        if group_by == "product":
-            main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
-        else:
-            # Wired up in Task 4.
-            main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
+if group_by == "product":
+    main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
+else:
+    # Wired up in Task 4.
+    main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
 
-        page_sql, page_params = paging_clause(effective_offset, effective_limit)
-        main_sql = main_sql_base + page_sql
-        # Params: min_stock_value, cutoff, offset, limit
-        main_params = (effective_min_value, cutoff_date, *page_params)
-        raw_rows = execute_query_params(main_sql, main_params, max_rows=effective_limit)
-        rows = _convert_rows([_shape_dead_stock_row(r) for r in raw_rows])
+page_sql, page_params = paging_clause(effective_offset, effective_limit)
+main_sql = main_sql_base + page_sql
+# Params: min_stock_value, cutoff, offset, limit
+main_params = (effective_min_value, cutoff_date, *page_params)
+raw_rows = execute_query_params(main_sql, main_params, max_rows=effective_limit)
+rows = _convert_rows([_shape_dead_stock_row(r) for r in raw_rows])
 ```
 
 Also add this row-shaping helper near the other private helpers near the top of the file (after `_convert_rows`):
@@ -484,9 +554,7 @@ def _shape_dead_stock_row(row: dict[str, Any]) -> dict[str, Any]:
     last = out.pop("LastSaleDate", None)
     days = out.get("days_since_sale")
     out["last_sale_date"] = last
-    out["months_since_sale"] = (
-        round(float(days) / 30.44, 1) if days is not None else None
-    )
+    out["months_since_sale"] = round(float(days) / 30.44, 1) if days is not None else None
     return out
 ```
 
@@ -519,15 +587,29 @@ class TestGetDeadStockAggregated:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_group_by_make_returns_aggregated_shape(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 100000.0, "total_dead_count": 250,
-              "never_sold_value": 5000.0, "never_sold_count": 20}],
             [
-                {"Make": "MAHLE", "dead_sku_count": 38,
-                 "total_stock_value": 24510.0, "avg_months_since_sale": 19.4,
-                 "oldest_last_sale": "2022-08-03"},
-                {"Make": "BOSCH", "dead_sku_count": 22,
-                 "total_stock_value": 14200.0, "avg_months_since_sale": 14.1,
-                 "oldest_last_sale": "2023-01-15"},
+                {
+                    "total_dead_value": 100000.0,
+                    "total_dead_count": 250,
+                    "never_sold_value": 5000.0,
+                    "never_sold_count": 20,
+                }
+            ],
+            [
+                {
+                    "Make": "MAHLE",
+                    "dead_sku_count": 38,
+                    "total_stock_value": 24510.0,
+                    "avg_months_since_sale": 19.4,
+                    "oldest_last_sale": "2022-08-03",
+                },
+                {
+                    "Make": "BOSCH",
+                    "dead_sku_count": 22,
+                    "total_stock_value": 14200.0,
+                    "avg_months_since_sale": 14.1,
+                    "oldest_last_sale": "2023-01-15",
+                },
             ],
         ]
         result = get_dead_stock(group_by="make")
@@ -546,11 +628,23 @@ class TestGetDeadStockAggregated:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_group_by_productgroup_uses_productgroup_column(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
-            [{"Productgroup": "HOD", "dead_sku_count": 10,
-              "total_stock_value": 500.0, "avg_months_since_sale": 16.0,
-              "oldest_last_sale": "2023-05-01"}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [
+                {
+                    "Productgroup": "HOD",
+                    "dead_sku_count": 10,
+                    "total_stock_value": 500.0,
+                    "avg_months_since_sale": 16.0,
+                    "oldest_last_sale": "2023-05-01",
+                }
+            ],
         ]
         result = get_dead_stock(group_by="productgroup")
         assert result["data"][0]["Productgroup"] == "HOD"
@@ -576,9 +670,7 @@ _DEAD_STOCK_GROUP_COLUMN = {
 }
 
 
-def _dead_stock_main_sql_aggregated(
-    group_by: str, include_inactive_warehouses: bool
-) -> str:
+def _dead_stock_main_sql_aggregated(group_by: str, include_inactive_warehouses: bool) -> str:
     """SQL for group_by='make' or 'productgroup'.
 
     `group_by` MUST already be validated against _DEAD_STOCK_GROUP_COLUMN —
@@ -588,8 +680,7 @@ def _dead_stock_main_sql_aggregated(
     group_column = _DEAD_STOCK_GROUP_COLUMN[group_by]
     cte_sql, _ = _dead_stock_ctes(include_inactive_warehouses)
     return (
-        cte_sql
-        + f"SELECT {group_column}, "
+        cte_sql + f"SELECT {group_column}, "
         "       COUNT(DISTINCT s.Productcode) AS dead_sku_count, "
         "       SUM(s.ActualStockValue) AS total_stock_value, "
         "       AVG(CAST(DATEDIFF(day, ls.LastSaleDate, GETDATE()) AS FLOAT) / 30.44) "
@@ -607,14 +698,12 @@ def _dead_stock_main_sql_aggregated(
 Replace the `# Wired up in Task 4.` else-branch in `get_dead_stock`:
 
 ```python
-        if group_by == "product":
-            main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
-            shape_fn = _shape_dead_stock_row
-        else:
-            main_sql_base = _dead_stock_main_sql_aggregated(
-                group_by, include_inactive_warehouses
-            )
-            shape_fn = _shape_dead_stock_aggregated_row
+if group_by == "product":
+    main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
+    shape_fn = _shape_dead_stock_row
+else:
+    main_sql_base = _dead_stock_main_sql_aggregated(group_by, include_inactive_warehouses)
+    shape_fn = _shape_dead_stock_aggregated_row
 ```
 
 And replace the `rows = _convert_rows([_shape_dead_stock_row(r) for r in raw_rows])` line with:

@@ -1,4 +1,3 @@
-
 from admcms_mcp.server import build_app
 
 

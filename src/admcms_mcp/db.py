@@ -193,9 +193,7 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
         columns = [col[0] for col in cursor.description] if cursor.description else []
         rows = cursor.fetchmany(effective_rows)
     result = [dict(zip(columns, row, strict=False)) for row in rows]
-    _audit.record_sql(
-        sql, None, int((time.monotonic() - _start) * 1000), len(result)
-    )
+    _audit.record_sql(sql, None, int((time.monotonic() - _start) * 1000), len(result))
     _cache_put(cache_key, result)
     return result
 
@@ -226,9 +224,7 @@ def execute_query_params(
         columns = [col[0] for col in cursor.description] if cursor.description else []
         rows = cursor.fetchmany(effective_rows)
     result = [dict(zip(columns, row, strict=False)) for row in rows]
-    _audit.record_sql(
-        sql, params, int((time.monotonic() - _start) * 1000), len(result)
-    )
+    _audit.record_sql(sql, params, int((time.monotonic() - _start) * 1000), len(result))
     _cache_put(cache_key, result)
     return result
 

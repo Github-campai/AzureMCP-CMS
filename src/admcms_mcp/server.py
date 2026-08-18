@@ -130,9 +130,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
                 )
 
             request.state.user_claims = claims
-            current_user.set(
-                claims.get("upn") or claims.get("oid") or "authenticated"
-            )
+            current_user.set(claims.get("upn") or claims.get("oid") or "authenticated")
             return await call_next(request)
         except Exception:
             # Fail closed on any unexpected error — never pass-through to MCP.
@@ -272,9 +270,9 @@ def _audited(tool_name: str, args: dict, call):
         if isinstance(result, dict):
             data = result.get("data")
             entry.row_count = len(data) if isinstance(data, list) else 0
-            entry.result_summary = result.get("summary") if isinstance(
-                result.get("summary"), dict
-            ) else None
+            entry.result_summary = (
+                result.get("summary") if isinstance(result.get("summary"), dict) else None
+            )
             err = result.get("error")
             if err and entry.error is None:
                 entry.error = str(err)
@@ -342,9 +340,7 @@ def _build_mcp_server() -> FastMCP:
     @mcp.tool()
     def get_schema(table_name: str) -> dict:
         """Return column metadata for an ADMCMS table."""
-        return _audited(
-            "get_schema", {"table_name": table_name}, lambda: _get_schema(table_name)
-        )
+        return _audited("get_schema", {"table_name": table_name}, lambda: _get_schema(table_name))
 
     @mcp.tool()
     def get_lookups(table_name: str, column_name: str, top_n: int = 50) -> dict:
@@ -813,9 +809,7 @@ def _build_mcp_server() -> FastMCP:
         return _audited(
             "get_customer_orders",
             {"customer_id": customer_id, "limit": limit, "offset": offset},
-            lambda: _get_customer_orders(
-                customer_id=customer_id, limit=limit, offset=offset
-            ),
+            lambda: _get_customer_orders(customer_id=customer_id, limit=limit, offset=offset),
         )
 
     @mcp.tool()
@@ -870,9 +864,7 @@ def _build_mcp_server() -> FastMCP:
         return _audited(
             "get_payment_method_stats",
             {"start_date": start_date, "end_date": end_date, "include_ly": include_ly},
-            lambda: _get_payment_method_stats(
-                start_date, end_date, include_ly=include_ly
-            ),
+            lambda: _get_payment_method_stats(start_date, end_date, include_ly=include_ly),
         )
 
     @mcp.tool()
@@ -890,9 +882,7 @@ def _build_mcp_server() -> FastMCP:
         return _audited(
             "get_salesrep_performance",
             {"start_date": start_date, "end_date": end_date, "include_ly": include_ly},
-            lambda: _get_salesrep_performance(
-                start_date, end_date, include_ly=include_ly
-            ),
+            lambda: _get_salesrep_performance(start_date, end_date, include_ly=include_ly),
         )
 
     @mcp.tool()
@@ -1074,9 +1064,7 @@ def _build_mcp_server() -> FastMCP:
         db_start = time.perf_counter()
         try:
             rows = execute_query("SELECT 1 AS ping", max_rows=1)
-            result["database"]["latency_ms"] = round(
-                (time.perf_counter() - db_start) * 1000, 1
-            )
+            result["database"]["latency_ms"] = round((time.perf_counter() - db_start) * 1000, 1)
             if not rows or rows[0].get("ping") != 1:
                 result["database"]["status"] = "degraded"
                 result["database"]["error"] = "unexpected response from SELECT 1"

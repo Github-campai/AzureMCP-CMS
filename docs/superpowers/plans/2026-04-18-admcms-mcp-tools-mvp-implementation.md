@@ -534,7 +534,12 @@ Replace the `_execute_with_params(sql, ...)` line in `search_products` with:
 And add import at top of `tools.py`:
 
 ```python
-from admcms_mcp.db import execute_query, execute_query_params, get_distinct_values, get_schema_columns
+from admcms_mcp.db import (
+    execute_query,
+    execute_query_params,
+    get_distinct_values,
+    get_schema_columns,
+)
 ```
 
 - [ ] **Step 4: Run tests**
@@ -568,9 +573,7 @@ class TestExecuteQueryParams:
 
         rows = execute_query_params("SELECT id FROM t WHERE x = ?", ("abc",), max_rows=5)
 
-        mock_cursor.execute.assert_called_once_with(
-            "SELECT id FROM t WHERE x = ?", ("abc",)
-        )
+        mock_cursor.execute.assert_called_once_with("SELECT id FROM t WHERE x = ?", ("abc",))
         mock_cursor.fetchmany.assert_called_once_with(5)
         assert rows == [{"id": 42}]
 
@@ -697,16 +700,13 @@ def get_revenue(
             return format_response(
                 data=[],
                 error=(
-                    f"Invalid group_by {group_by!r}; "
-                    f"must be one of: {', '.join(_VALID_GROUP_BY)}"
+                    f"Invalid group_by {group_by!r}; must be one of: {', '.join(_VALID_GROUP_BY)}"
                 ),
             )
         start_c8 = admcms_date(start_date)
         end_c8 = admcms_date(end_date)
         comp_sql, comp_params = company_filter(company)
-        base_where = (
-            "WHERE InvoiceDate >= ? AND InvoiceDate < ?" + comp_sql
-        )
+        base_where = "WHERE InvoiceDate >= ? AND InvoiceDate < ?" + comp_sql
         params = (start_c8, end_c8, *comp_params)
 
         if group_by == "total":
@@ -741,7 +741,8 @@ def get_revenue(
                 "FROM SALESINVOICELINES sil "
                 "JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
                 "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
-                + base_where.replace("InvoiceDate", "si.InvoiceDate") + " "
+                + base_where.replace("InvoiceDate", "si.InvoiceDate")
+                + " "
                 "GROUP BY p.Make ORDER BY amount DESC"
             )
         elif group_by == "customer":
@@ -749,7 +750,8 @@ def get_revenue(
                 "SELECT cs.Searchname, SUM(si.TotalAmount) AS amount "
                 "FROM SALESINVOICE si "
                 "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.CustSuppnr "
-                + base_where.replace("InvoiceDate", "si.InvoiceDate") + " "
+                + base_where.replace("InvoiceDate", "si.InvoiceDate")
+                + " "
                 "GROUP BY cs.Searchname ORDER BY amount DESC"
             )
         elif group_by == "company":
@@ -988,69 +990,71 @@ git commit -m "feat(tools): get_customer_orders with open-order filter"
 Locate `_build_mcp_server` in `src/admcms_mcp/server.py`. After the existing `get_lookups` tool registration (and before the `admcms://schema-knowledge` resource), add:
 
 ```python
-    @mcp.tool()
-    def search_products(
-        search_term: str,
-        limit: int = 20,
-        company: str | None = None,
-    ) -> dict:
-        """Search ADMCMS products by search term.
+@mcp.tool()
+def search_products(
+    search_term: str,
+    limit: int = 20,
+    company: str | None = None,
+) -> dict:
+    """Search ADMCMS products by search term.
 
-        Matches on Productcode or Searchname using LIKE. Case-sensitivity
-        follows the DB collation. Results ordered active-first then by
-        Salesprice desc.
+    Matches on Productcode or Searchname using LIKE. Case-sensitivity
+    follows the DB collation. Results ordered active-first then by
+    Salesprice desc.
 
-        Args:
-            search_term: substring to find (e.g. "filter", "MAHLE-12").
-            limit: max results, clamped 1-500, default 20.
-            company: optional company/mandant filter. None = all companies.
+    Args:
+        search_term: substring to find (e.g. "filter", "MAHLE-12").
+        limit: max results, clamped 1-500, default 20.
+        company: optional company/mandant filter. None = all companies.
 
-        Returns: {data: list of products, summary: {count, search_term}, error}.
-        """
-        return _search_products(search_term, limit=limit, company=company)
+    Returns: {data: list of products, summary: {count, search_term}, error}.
+    """
+    return _search_products(search_term, limit=limit, company=company)
 
-    @mcp.tool()
-    def get_revenue(
-        start_date: str,
-        end_date: str,
-        company: str | None = None,
-        group_by: str = "total",
-    ) -> dict:
-        """Aggregate sales invoice revenue between two ISO dates.
 
-        Args:
-            start_date: ISO YYYY-MM-DD, inclusive.
-            end_date: ISO YYYY-MM-DD, exclusive.
-            company: optional company filter.
-            group_by: "total" (default), "month", "make", "customer", "company".
+@mcp.tool()
+def get_revenue(
+    start_date: str,
+    end_date: str,
+    company: str | None = None,
+    group_by: str = "total",
+) -> dict:
+    """Aggregate sales invoice revenue between two ISO dates.
 
-        Returns: {data, summary: {total_amount, period, group_by, ...}, error}.
-        """
-        return _get_revenue(start_date, end_date, company=company, group_by=group_by)
+    Args:
+        start_date: ISO YYYY-MM-DD, inclusive.
+        end_date: ISO YYYY-MM-DD, exclusive.
+        company: optional company filter.
+        group_by: "total" (default), "month", "make", "customer", "company".
 
-    @mcp.tool()
-    def get_customer_orders(
-        customer_id: int | None = None,
-        only_open: bool = True,
-        company: str | None = None,
-        limit: int = 50,
-    ) -> dict:
-        """List sales orders, optionally filtered by customer.
+    Returns: {data, summary: {total_amount, period, group_by, ...}, error}.
+    """
+    return _get_revenue(start_date, end_date, company=company, group_by=group_by)
 
-        Args:
-            customer_id: CUSTSUPPLIER.CustSuppnr of the customer, or None for all.
-            only_open: when True, only orders that haven't been invoiced/closed.
-            company: optional company filter.
-            limit: max results, clamped 1-500, default 50.
 
-        Returns: {data: orders, summary: {count, total_open_value, ...}, error}.
-        """
-        return _get_customer_orders(
-            customer_id=customer_id,
-            only_open=only_open,
-            company=company,
-            limit=limit,
-        )
+@mcp.tool()
+def get_customer_orders(
+    customer_id: int | None = None,
+    only_open: bool = True,
+    company: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """List sales orders, optionally filtered by customer.
+
+    Args:
+        customer_id: CUSTSUPPLIER.CustSuppnr of the customer, or None for all.
+        only_open: when True, only orders that haven't been invoiced/closed.
+        company: optional company filter.
+        limit: max results, clamped 1-500, default 50.
+
+    Returns: {data: orders, summary: {count, total_open_value, ...}, error}.
+    """
+    return _get_customer_orders(
+        customer_id=customer_id,
+        only_open=only_open,
+        company=company,
+        limit=limit,
+    )
 ```
 
 Add the import aliases at the top of the `_build_mcp_server` body (just below existing `_query_database` imports), then alias the three new tool functions:

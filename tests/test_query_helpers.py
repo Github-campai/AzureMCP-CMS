@@ -185,9 +185,7 @@ class TestBuildFilterWhere:
         assert params == ()
 
     def test_country_fragment_and_params(self):
-        sql, params = build_filter_where(
-            {"country": ["NL", "BE"]}, country_col="DeliveryCountry"
-        )
+        sql, params = build_filter_where({"country": ["NL", "BE"]}, country_col="DeliveryCountry")
         assert sql == " AND DeliveryCountry IN (?,?)"
         assert params == ("NL", "BE")
 
@@ -197,9 +195,7 @@ class TestBuildFilterWhere:
         assert params == ("G2", "G3", "G4", "G5", "G6")
 
     def test_business_unit_union_dedup_stable_order(self):
-        sql, params = build_filter_where(
-            {"business_unit": ["B2C", "IC", "B2C"]}, cs="cs"
-        )
+        sql, params = build_filter_where({"business_unit": ["B2C", "IC", "B2C"]}, cs="cs")
         assert sql == " AND cs.CustSuppGroup IN (?,?)"
         assert params == ("ND", "INTC")
 
@@ -250,8 +246,7 @@ class TestBuildFilterWhere:
             country_col="DeliveryCountry",
         )
         assert sql == (
-            " AND cs.CustSuppGroup IN (?) AND p.Make IN (?)"
-            " AND DeliveryCountry IN (?,?)"
+            " AND cs.CustSuppGroup IN (?) AND p.Make IN (?) AND DeliveryCountry IN (?,?)"
         )
         assert params == ("ND", "DU", "NL", "BE")
 

@@ -183,7 +183,8 @@ def _fetch_revenue(
         col = "p.Make" if group_by == "make" else "p.Productgroup"
         join_clause = (
             "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            if needs_cs else ""
+            if needs_cs
+            else ""
         )
         filter_sql, filter_params = build_filter_where(
             filters, cs="cs" if needs_cs else None, p="p", country_col="si.DeliveryCountry"
@@ -191,9 +192,12 @@ def _fetch_revenue(
         sql = (
             f"SELECT {col}, SUM(sil.InvoiceAmountHC) AS amount "
             "FROM SALESINVOICELINES sil JOIN SALESINVOICE si ON si.Invoicenr = sil.Invoicenr "
-            "JOIN PRODUCT p ON p.Productcode = sil.Productcode " + join_clause
+            "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
+            + join_clause
             + "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
-            + credits + filter_sql + f" GROUP BY {col} ORDER BY amount DESC"
+            + credits
+            + filter_sql
+            + f" GROUP BY {col} ORDER BY amount DESC"
         )
         return execute_query_params(sql, params + filter_params, max_rows=500)
 
@@ -491,7 +495,9 @@ def _fetch_margin(
 
     extra_join = ""
     if needs_cs:
-        extra_join += "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+        extra_join += (
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+        )
     if needs_p:
         extra_join += "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
 
@@ -793,7 +799,8 @@ def _fetch_kpi_block(
     # exact piece counts need a line-level tool.
     header_join = (
         "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = Customer AND cs.CustSuppType = '1' "
-        if needs_cs else ""
+        if needs_cs
+        else ""
     )
     header_filter_sql, header_filter_params = build_filter_where(
         filters, cs="cs" if needs_cs else None, country_col="DeliveryCountry"
@@ -809,13 +816,9 @@ def _fetch_kpi_block(
         "SUM(LastLineNumber) AS line_count "
         "FROM Salesinvoice "
         f"{header_join}"
-        "WHERE InvoiceDate >= ? AND InvoiceDate < ?"
-        + credits
-        + header_filter_sql
+        "WHERE InvoiceDate >= ? AND InvoiceDate < ?" + credits + header_filter_sql
     )
-    header_rows = execute_query_params(
-        header_sql, params + header_filter_params, max_rows=1
-    )
+    header_rows = execute_query_params(header_sql, params + header_filter_params, max_rows=1)
     h = header_rows[0] if header_rows else {}
 
     turnover = float(h.get("turnover") or 0)
@@ -883,9 +886,7 @@ def get_kpi_summary(
 
         ly_start = shift_year(start_date, -1)
         ly_end = shift_year(end_date, -1)
-        ly = _fetch_kpi_block(
-            ly_start, ly_end, filters=filters, exclude_credits=exclude_credits
-        )
+        ly = _fetch_kpi_block(ly_start, ly_end, filters=filters, exclude_credits=exclude_credits)
 
         deltas: dict[str, Any] = {}
         for metric in (
@@ -1018,7 +1019,8 @@ def get_country_segment_matrix(
             "JOIN Salesinvoice si ON si.Invoicenr = sil.Invoicenr "
             "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
             "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ? AND sil.PurchasedAt <> 81"
-            + filter_sql + " "
+            + filter_sql
+            + " "
             f"GROUP BY si.DeliveryCountry, {_MARGIN_SEGMENT_CASE}"
         )
         line_rows = execute_query_params(line_sql, params, max_rows=2000)
@@ -1028,8 +1030,7 @@ def get_country_segment_matrix(
             "SUM(si.ShipCost) AS shipping, SUM(si.ShipCostCalculated) AS shipping_cost "
             "FROM Salesinvoice si "
             "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?"
-            + filter_sql + " "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?" + filter_sql + " "
             f"GROUP BY si.DeliveryCountry, {_MARGIN_SEGMENT_CASE}"
         )
         ship_rows = execute_query_params(ship_sql, params, max_rows=2000)
@@ -1108,8 +1109,7 @@ def get_top_customers(
             "SUM(si.LineTotal) AS total_amount "
             "FROM SALESINVOICE si "
             "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?"
-            + filter_sql + " "
+            "WHERE si.InvoiceDate >= ? AND si.InvoiceDate < ?" + filter_sql + " "
             "GROUP BY cs.CustSuppnr, cs.Searchname, cs.CustSuppGroup "
             "ORDER BY total_amount DESC"
         )
@@ -2122,7 +2122,9 @@ def _fetch_discount(
 
     extra_join = ""
     if needs_cs:
-        extra_join += "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+        extra_join += (
+            "JOIN CustSupplier cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
+        )
     if needs_p:
         extra_join += "JOIN PRODUCT p ON p.Productcode = sil.Productcode "
 
@@ -2261,7 +2263,8 @@ def _fetch_order_origin(
     needs_cs = _wants_cs(filters)
     join_clause = (
         "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1' "
-        if needs_cs else ""
+        if needs_cs
+        else ""
     )
     filter_sql, filter_params = build_filter_where(
         filters, cs="cs" if needs_cs else None, country_col="si.DeliveryCountry"
@@ -2372,9 +2375,7 @@ def _shape_dead_stock_row(row: dict[str, Any]) -> dict[str, Any]:
     last = out.pop("LastSaleDate", None)
     days = out.get("days_since_sale")
     out["last_sale_date"] = last
-    out["months_since_sale"] = (
-        round(float(days) / 30.44, 1) if days is not None else None
-    )
+    out["months_since_sale"] = round(float(days) / 30.44, 1) if days is not None else None
     return out
 
 
@@ -2416,8 +2417,7 @@ def _dead_stock_ctes(include_inactive_warehouses: bool) -> str:
 def _dead_stock_summary_sql(include_inactive_warehouses: bool) -> str:
     cte_sql = _dead_stock_ctes(include_inactive_warehouses)
     return (
-        cte_sql
-        + "SELECT "
+        cte_sql + "SELECT "
         "  SUM(CASE WHEN ls.LastSaleDate < ? THEN s.ActualStockValue ELSE 0 END) "
         "    AS total_dead_value, "
         "  COUNT(DISTINCT CASE WHEN ls.LastSaleDate < ? THEN s.Productcode END) "
@@ -2434,8 +2434,7 @@ def _dead_stock_summary_sql(include_inactive_warehouses: bool) -> str:
 def _dead_stock_main_sql_per_product(include_inactive_warehouses: bool) -> str:
     cte_sql = _dead_stock_ctes(include_inactive_warehouses)
     return (
-        cte_sql
-        + "SELECT s.Productcode, p.Description, p.Make, p.Productgroup, "
+        cte_sql + "SELECT s.Productcode, p.Description, p.Make, p.Productgroup, "
         "       s.Warehouse, s.ActualStock, s.ActualStockValue, s.CostPrice, "
         "       ls.LastSaleDate, "
         "       DATEDIFF(day, ls.LastSaleDate, GETDATE()) AS days_since_sale "
@@ -2453,9 +2452,7 @@ _DEAD_STOCK_GROUP_COLUMN = {
 }
 
 
-def _dead_stock_main_sql_aggregated(
-    group_by: str, include_inactive_warehouses: bool
-) -> str:
+def _dead_stock_main_sql_aggregated(group_by: str, include_inactive_warehouses: bool) -> str:
     """SQL for group_by='make' or 'productgroup'.
 
     `group_by` MUST already be validated against _DEAD_STOCK_GROUP_COLUMN —
@@ -2465,8 +2462,7 @@ def _dead_stock_main_sql_aggregated(
     group_column = _DEAD_STOCK_GROUP_COLUMN[group_by]
     cte_sql = _dead_stock_ctes(include_inactive_warehouses)
     return (
-        cte_sql
-        + f"SELECT {group_column}, "
+        cte_sql + f"SELECT {group_column}, "
         "       COUNT(DISTINCT s.Productcode) AS dead_sku_count, "
         "       SUM(s.ActualStockValue) AS total_stock_value, "
         "       AVG(CAST(DATEDIFF(day, ls.LastSaleDate, GETDATE()) AS FLOAT) / 30.44) "
@@ -2502,10 +2498,7 @@ def get_dead_stock(
     if group_by not in _DEAD_STOCK_GROUP_BY:
         return format_response(
             data=[],
-            error=(
-                f"Invalid group_by: {group_by!r}; "
-                f"must be one of {list(_DEAD_STOCK_GROUP_BY)}"
-            ),
+            error=(f"Invalid group_by: {group_by!r}; must be one of {list(_DEAD_STOCK_GROUP_BY)}"),
         )
 
     try:
@@ -2524,18 +2517,22 @@ def get_dead_stock(
         # Params: min_stock_value (stock CTE), cutoff (×2 in CASE WHEN)
         summary_params = (effective_min_value, cutoff_date, cutoff_date)
         totals_rows = execute_query_params(summary_sql, summary_params, max_rows=1)
-        totals = totals_rows[0] if totals_rows else {
-            "total_dead_value": 0, "total_dead_count": 0,
-            "never_sold_value": 0, "never_sold_count": 0,
-        }
+        totals = (
+            totals_rows[0]
+            if totals_rows
+            else {
+                "total_dead_value": 0,
+                "total_dead_count": 0,
+                "never_sold_value": 0,
+                "never_sold_count": 0,
+            }
+        )
 
         if group_by == "product":
             main_sql_base = _dead_stock_main_sql_per_product(include_inactive_warehouses)
             shape_fn = _shape_dead_stock_row
         else:
-            main_sql_base = _dead_stock_main_sql_aggregated(
-                group_by, include_inactive_warehouses
-            )
+            main_sql_base = _dead_stock_main_sql_aggregated(group_by, include_inactive_warehouses)
             shape_fn = _shape_dead_stock_aggregated_row
 
         page_sql, page_params = paging_clause(effective_offset, effective_limit)
@@ -2687,7 +2684,5 @@ def get_filter_options() -> dict[str, Any]:
     result: dict[str, Any] = {k: list(v) for k, v in dims.items()}
     result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
     if errors:
-        result["error"] = "Execution error: " + "; ".join(
-            f"{k}: {v}" for k, v in errors.items()
-        )
+        result["error"] = "Execution error: " + "; ".join(f"{k}: {v}" for k, v in errors.items())
     return result
