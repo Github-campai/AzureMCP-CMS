@@ -41,6 +41,12 @@ _ICON_FILENAMES = ("icon.png", "icon.webp", "icon.jpg", "icon.jpeg", "icon.svg")
 #: it is an opaque URL, and the response carries the real Content-Type.
 ICON_ROUTE = "/icon.png"
 
+#: The same image under the paths a client may probe instead of reading
+#: `serverInfo.icons`. Claude's connector UI shows a generated avatar despite the
+#: icons being published correctly, so the browser conventions are served too --
+#: they cost one route each and cover the clients that never look at the metadata.
+ICON_ALIAS_ROUTES = ("/favicon.ico", "/apple-touch-icon.png", "/icon.svg")
+
 _FALLBACK_MEDIA_TYPE = "image/png"
 
 #: Beyond this a data URI costs more than it is worth on every initialize.

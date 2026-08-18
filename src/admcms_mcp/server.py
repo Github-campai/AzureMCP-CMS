@@ -27,7 +27,13 @@ from starlette.routing import Mount, Route
 from admcms_mcp.admin import build_admin_routes
 from admcms_mcp.audit import audit_call, current_user
 from admcms_mcp.auth import Forbidden, InvalidToken, check_access, validate_jwt
-from admcms_mcp.branding import ICON_ROUTE, icon_bytes, icon_media_type, server_icons
+from admcms_mcp.branding import (
+    ICON_ALIAS_ROUTES,
+    ICON_ROUTE,
+    icon_bytes,
+    icon_media_type,
+    server_icons,
+)
 from admcms_mcp.config import get_settings
 from admcms_mcp.db import _MAX_ROWS_HARD_LIMIT, reset_truncation, was_truncated
 from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
@@ -62,7 +68,9 @@ logger = logging.getLogger(__name__)
 #: Paths reachable without a bearer token. The OAuth discovery, registration and
 #: token endpoints have to be public — a client that cannot yet authenticate
 #: needs them to find out how.
-_PUBLIC_PATHS = frozenset({"/", "/healthz", ICON_ROUTE}) | OAUTH_PUBLIC_PATHS
+_PUBLIC_PATHS = (
+    frozenset({"/", "/healthz", ICON_ROUTE}) | frozenset(ICON_ALIAS_ROUTES) | OAUTH_PUBLIC_PATHS
+)
 
 
 class McpTrailingSlashMiddleware(BaseHTTPMiddleware):
@@ -1275,6 +1283,7 @@ def build_app() -> Starlette:
         Route("/", index, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
         Route(ICON_ROUTE, icon, methods=["GET"]),
+        *(Route(alias, icon, methods=["GET"]) for alias in ICON_ALIAS_ROUTES),
         *build_oauth_routes(),
         *build_admin_routes(mcp),
         Mount("/mcp", app=mcp_asgi_app),

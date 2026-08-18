@@ -219,3 +219,13 @@ async def test_server_announces_the_icon_at_initialize(app_client, monkeypatch):
     assert icons[0]["src"] == "https://admcms.example.com/icon.png"
     assert icons[0]["mimeType"] == branding.icon_media_type()
     assert any(icon["src"].startswith("data:") for icon in icons)
+
+
+@pytest.mark.parametrize("path", branding.ICON_ALIAS_ROUTES)
+async def test_browser_convention_paths_serve_the_same_icon(app_client, path):
+    """Clients that ignore serverInfo.icons probe these instead."""
+    async with app_client(build_app()) as client:
+        response = await client.get(path)
+    assert response.status_code == 200, f"{path} must be public"
+    assert response.content == branding.icon_bytes()
+    assert response.headers["content-type"].startswith(branding.icon_media_type())
