@@ -37,6 +37,10 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The connector icon; without this the wheel omits it and /icon.png 404s.
+admcms_mcp = ["assets/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

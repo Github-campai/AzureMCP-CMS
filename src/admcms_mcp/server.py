@@ -27,6 +27,7 @@ from starlette.routing import Mount, Route
 from admcms_mcp.admin import build_admin_routes
 from admcms_mcp.audit import audit_call, current_user
 from admcms_mcp.auth import Forbidden, InvalidToken, check_access, validate_jwt
+from admcms_mcp.branding import ICON_MEDIA_TYPE, ICON_ROUTE, icon_bytes, server_icons
 from admcms_mcp.config import get_settings
 from admcms_mcp.db import _MAX_ROWS_HARD_LIMIT, reset_truncation, was_truncated
 from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
@@ -61,7 +62,7 @@ logger = logging.getLogger(__name__)
 #: Paths reachable without a bearer token. The OAuth discovery, registration and
 #: token endpoints have to be public — a client that cannot yet authenticate
 #: needs them to find out how.
-_PUBLIC_PATHS = frozenset({"/", "/healthz"}) | OAUTH_PUBLIC_PATHS
+_PUBLIC_PATHS = frozenset({"/", "/healthz", ICON_ROUTE}) | OAUTH_PUBLIC_PATHS
 
 
 class McpTrailingSlashMiddleware(BaseHTTPMiddleware):
@@ -168,6 +169,18 @@ def _sanitize(detail: str) -> str:
 
 async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
+
+
+async def icon(request: Request) -> Response:
+    """Serve the connector icon. Public: a client fetches this before it has a token."""
+    data = icon_bytes()
+    if data is None:
+        return JSONResponse({"error": "not_found", "detail": "No icon asset"}, status_code=404)
+    return Response(
+        content=data,
+        media_type=ICON_MEDIA_TYPE,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 _INDEX_HTML = """<!doctype html>
@@ -323,11 +336,21 @@ def _build_mcp_server() -> FastMCP:
     transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
     )
+    # Icons ride along in serverInfo at initialize. The https entry needs an
+    # absolute URL, which only PUBLIC_BASE_URL can supply at construction time;
+    # the data-URI entry works regardless.
+    try:
+        _public_base = get_settings().public_base_url
+    except Exception:
+        _public_base = ""
+
     mcp = FastMCP(
         "admcms-mcp",
         stateless_http=True,
         streamable_http_path="/",
         transport_security=transport_security,
+        icons=server_icons(_public_base),
+        website_url="https://www.cmsnl.com",
     )
 
     @mcp.tool()
@@ -1249,6 +1272,7 @@ def build_app() -> Starlette:
     routes = [
         Route("/", index, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
+        Route(ICON_ROUTE, icon, methods=["GET"]),
         *build_oauth_routes(),
         *build_admin_routes(mcp),
         Mount("/mcp", app=mcp_asgi_app),
