@@ -35,6 +35,11 @@ param(
     # Zet dit om echt te wijzigen. Zonder deze switch: alleen rapporteren.
     [switch]$Uitvoeren,
 
+    # Sla de wachtwoordvraag over en genereer er een. Het wachtwoord wordt dan
+    # alleen naar Key Vault geschreven en nergens getoond -- niemand hoeft het te
+    # kennen, want de app haalt het zelf uit de vault.
+    [switch]$GenereerWachtwoord,
+
     [string]$LoginName = 'admcms_mcp',
 
     [string]$SqlServer = 'cmsnl.database.windows.net',
@@ -129,10 +134,16 @@ if (-not $Uitvoeren) {
 # ---------------------------------------------------------------------------
 
 Stap 'Nieuw wachtwoord'
-Write-Host "   Plak een wachtwoord en druk op Enter (je ziet niets tijdens het plakken),"
-Write-Host "   of druk direct op Enter om er een te laten genereren."
-$secure = Read-Host -Prompt '   Wachtwoord' -AsSecureString
-$nieuwWachtwoord = [System.Net.NetworkCredential]::new('', $secure).Password
+if ($GenereerWachtwoord) {
+    $nieuwWachtwoord = ''
+    Write-Host "   -GenereerWachtwoord: wachtwoord wordt gegenereerd, geen invoer nodig."
+}
+else {
+    Write-Host "   Plak een wachtwoord en druk op Enter (je ziet niets tijdens het plakken),"
+    Write-Host "   of druk direct op Enter om er een te laten genereren."
+    $secure = Read-Host -Prompt '   Wachtwoord' -AsSecureString
+    $nieuwWachtwoord = [System.Net.NetworkCredential]::new('', $secure).Password
+}
 
 if ([string]::IsNullOrWhiteSpace($nieuwWachtwoord)) {
     $bytes = [byte[]]::new(24)
