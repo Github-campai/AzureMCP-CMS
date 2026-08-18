@@ -135,9 +135,7 @@ class LocalSQLiteStore:
 
     def get(self, entry_id: str) -> dict[str, Any] | None:
         with self._lock, self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM audit_log WHERE id = ?", (entry_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM audit_log WHERE id = ?", (entry_id,)).fetchone()
         if row is None:
             return None
         d = dict(row)
@@ -157,8 +155,7 @@ class LocalSQLiteStore:
                 (since_iso,),
             ).fetchone()["c"]
             errors = conn.execute(
-                "SELECT COUNT(*) AS c FROM audit_log "
-                "WHERE timestamp >= ? AND error IS NOT NULL",
+                "SELECT COUNT(*) AS c FROM audit_log WHERE timestamp >= ? AND error IS NOT NULL",
                 (since_iso,),
             ).fetchone()["c"]
             per_tool = conn.execute(

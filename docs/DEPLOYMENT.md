@@ -232,3 +232,72 @@ met alle resources `CMS-MCP-{kind}-dev`.
 - [Client setup (voor eindgebruikers)](CLIENT-SETUP.md)
 - [Operating model (wie doet wat)](OPERATING-MODEL.md)
 - [Design spec](superpowers/specs/2026-05-12-azuremcp-cms-design.md)
+
+---
+
+## OAuth: hoe "alleen een URL" werkt
+
+Sinds de OAuth-proxy hoeft een client niets anders te krijgen dan
+`https://<host>/mcp`. De keten:
+
+1. Client doet een POST op `/mcp` zonder token → **401** met
+   `WWW-Authenticate: ... resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"`
+2. Client haalt die metadata op → wijst naar **onze eigen host** als authorization server
+3. Client haalt `/.well-known/oauth-authorization-server` op → vindt daar een
+   `registration_endpoint`
+4. Client registreert zich via `POST /register` → krijgt de bestaande Entra
+   app-id terug (DCR-stub)
+5. Client stuurt de gebruiker naar `GET /authorize` → wij redirecten naar Entra
+   met de scope herschreven naar `api://<app-id>/admcms.read offline_access`
+6. Client wisselt de code in op `POST /token` → wij proxyen naar Entra
+
+Entra blijft de enige identity provider. Er worden hier geen tokens gemaakt.
+
+**Waarom een eigen authorization server?** Entra publiceert geen
+`registration_endpoint`. Clients die alleen een URL krijgen weigeren dan de flow
+te starten. Zelfde model als AzureMCP-inforcer.
+
+### Vereiste redirect URIs in Entra
+
+De token-exchange loopt server-side zonder client secret, dus de callbacks van
+de clients moeten onder **publicClient** ("Mobile and desktop applications")
+staan — niet onder Web. Zonder deze entries krijgt de gebruiker `AADSTS50011`
+direct na het inloggen.
+
+```powershell
+az login
+# Eerst kijken wat er zou wijzigen (dry run, wijzigt niets):
+.\scripts\add-client-redirect-uris.ps1
+# Daarna echt:
+.\scripts\add-client-redirect-uris.ps1 -Uitvoeren
+```
+
+Het script merget met de bestaande lijst — de Web-URI's van de Copilot Studio-
+connector blijven staan.
+
+### Nieuwe environment variables
+
+| Variable | Standaard | Doel |
+|---|---|---|
+| `PUBLIC_BASE_URL` | *(leeg)* | Externe basis-URL. Leeg = afleiden uit `X-Forwarded-*`. **Zet dit zodra een custom domain ervoor staat**, anders adverteert de OAuth-metadata de Container Apps-hostname. |
+| `ENTRA_AUTHORITY` | `organizations` | Entra-authority voor de proxy. `organizations` = elke werk/school-tenant; `validate_jwt` weigert daarna nog altijd tenants buiten `ENTRA_ALLOWED_TENANTS`. |
+| `ALLOW_UNAUTHENTICATED_MCP_GET` | `false` | Noodklep voor de Copilot Studio preview-connector. Aan = een GET op `/mcp` zonder token mag door, en houdt dan een SSE-stream open. Alleen aanzetten als een client stukloopt. |
+
+### Custom domain (optioneel)
+
+Om de URL korter te maken, bijvoorbeeld `https://admcms.campai.nl/mcp`:
+
+```powershell
+$RG  = "CMS-MCP-rg-prod"; $APP = "cms-mcp-app-prod"
+$FQDN = az containerapp show -n $APP -g $RG --query "properties.configuration.ingress.fqdn" -o tsv
+az containerapp hostname add --hostname admcms.campai.nl -n $APP -g $RG
+# DNS in de campai.nl-zone: CNAME admcms -> $FQDN
+#                           TXT   asuid.admcms -> <verificatiecode uit onderstaande call>
+az containerapp show -n $APP -g $RG --query "properties.customDomainVerificationId" -o tsv
+az containerapp hostname bind --hostname admcms.campai.nl -n $APP -g $RG --environment CMS-MCP-env-prod --validation-method CNAME
+az containerapp update -n $APP -g $RG --set-env-vars "PUBLIC_BASE_URL=https://admcms.campai.nl"
+```
+
+De laatste regel is niet optioneel: zonder `PUBLIC_BASE_URL` blijft de
+OAuth-metadata naar de oude hostname wijzen en klopt de `resource` niet meer met
+de URL waarop de gebruiker verbindt.

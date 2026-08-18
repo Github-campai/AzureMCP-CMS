@@ -114,13 +114,9 @@ class TestExecuteQueryParams:
         mock_conn.cursor.return_value = mock_cursor
         _mock_borrow(mock_borrow, mock_conn)
 
-        rows = execute_query_params(
-            "SELECT id FROM t WHERE x = ?", ("abc",), max_rows=5
-        )
+        rows = execute_query_params("SELECT id FROM t WHERE x = ?", ("abc",), max_rows=5)
 
-        mock_cursor.execute.assert_called_once_with(
-            "SELECT id FROM t WHERE x = ?", ("abc",)
-        )
+        mock_cursor.execute.assert_called_once_with("SELECT id FROM t WHERE x = ?", ("abc",))
         mock_cursor.fetchmany.assert_called_once_with(5)
         assert rows == [{"id": 42}]
 

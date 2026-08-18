@@ -441,20 +441,23 @@ class TestValidateQuery:
         with pytest.raises(ValueError, match="empty"):
             validate_query("   \n\t  ")
 
-    @pytest.mark.parametrize("keyword", [
-        "INSERT INTO foo VALUES (1)",
-        "UPDATE foo SET bar = 1",
-        "DELETE FROM foo",
-        "DROP TABLE foo",
-        "ALTER TABLE foo ADD COLUMN bar INT",
-        "CREATE TABLE foo (id INT)",
-        "TRUNCATE TABLE foo",
-        "EXEC sp_stuff",
-        "EXECUTE sp_stuff",
-        "MERGE foo USING bar",
-        "GRANT SELECT ON foo TO bar",
-        "REVOKE SELECT ON foo FROM bar",
-    ])
+    @pytest.mark.parametrize(
+        "keyword",
+        [
+            "INSERT INTO foo VALUES (1)",
+            "UPDATE foo SET bar = 1",
+            "DELETE FROM foo",
+            "DROP TABLE foo",
+            "ALTER TABLE foo ADD COLUMN bar INT",
+            "CREATE TABLE foo (id INT)",
+            "TRUNCATE TABLE foo",
+            "EXEC sp_stuff",
+            "EXECUTE sp_stuff",
+            "MERGE foo USING bar",
+            "GRANT SELECT ON foo TO bar",
+            "REVOKE SELECT ON foo FROM bar",
+        ],
+    )
     def test_rejects_non_select_statements(self, keyword):
         with pytest.raises(ValueError):
             validate_query(keyword)
@@ -496,9 +499,18 @@ and execution logic are added in a later task.
 import re
 
 _DANGEROUS_KEYWORDS = (
-    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER",
-    "CREATE", "TRUNCATE", "EXEC", "EXECUTE", "MERGE",
-    "GRANT", "REVOKE",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DROP",
+    "ALTER",
+    "CREATE",
+    "TRUNCATE",
+    "EXEC",
+    "EXECUTE",
+    "MERGE",
+    "GRANT",
+    "REVOKE",
 )
 
 _DANGEROUS_PATTERN = re.compile(
@@ -680,9 +692,18 @@ from admcms_mcp.keyvault import get_secret
 logger = logging.getLogger(__name__)
 
 _DANGEROUS_KEYWORDS = (
-    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER",
-    "CREATE", "TRUNCATE", "EXEC", "EXECUTE", "MERGE",
-    "GRANT", "REVOKE",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "DROP",
+    "ALTER",
+    "CREATE",
+    "TRUNCATE",
+    "EXEC",
+    "EXECUTE",
+    "MERGE",
+    "GRANT",
+    "REVOKE",
 )
 
 _DANGEROUS_PATTERN = re.compile(
@@ -781,9 +802,7 @@ def get_schema_columns(table_name: str) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=False)) for row in rows]
 
 
-def get_distinct_values(
-    table_name: str, column_name: str, top_n: int = 50
-) -> list[Any]:
+def get_distinct_values(table_name: str, column_name: str, top_n: int = 50) -> list[Any]:
     """Fetch distinct values for a column.
 
     Table and column names cannot be passed as parameters in T-SQL (they
@@ -1197,7 +1216,9 @@ async def test_mcp_endpoint_exists():
     """
     app = build_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/mcp", json={}, headers={"Accept": "application/json, text/event-stream"})
+        response = await client.post(
+            "/mcp", json={}, headers={"Accept": "application/json, text/event-stream"}
+        )
     # Expect 400/406/422 (bad request) rather than 404 (not found)
     assert response.status_code != 404
 ```
@@ -1350,6 +1371,7 @@ def make_token(rsa_key):
         header = {"alg": "RS256", "kid": rsa_key["kid"]}
         token = jwt.encode(header, payload, rsa_key["private_pem"])
         return token.decode() if isinstance(token, bytes) else token
+
     return _make
 ```
 
@@ -1404,6 +1426,7 @@ def settings_patch(monkeypatch):
     monkeypatch.setenv("ENTRA_ALLOWED_TENANTS", "campai-tenant-id,cms-lelystad-tenant-id")
     # Clear cached settings
     from admcms_mcp.config import get_settings
+
     get_settings.cache_clear()
 
 
@@ -1655,6 +1678,7 @@ def settings_with_group(monkeypatch):
     monkeypatch.setenv("ENTRA_ALLOWED_TENANTS", "campai-tenant-id")
     monkeypatch.setenv("CAMPAI_ALLOWED_GROUP", "campai-group-1")
     from admcms_mcp.config import get_settings
+
     get_settings.cache_clear()
 
 
@@ -1662,54 +1686,64 @@ class TestCheckAccess:
     def test_grants_via_campai_group(self, settings_with_group):
         with patch("admcms_mcp.auth.get_secret") as mock_kv:
             mock_kv.return_value = json.dumps({"users": [], "groups": []})
-            check_access({
-                "oid": "some-oid",
-                "upn": "user@campai.nl",
-                "groups": ["campai-group-1", "other-group"],
-                "tid": "campai-tenant-id",
-            })
+            check_access(
+                {
+                    "oid": "some-oid",
+                    "upn": "user@campai.nl",
+                    "groups": ["campai-group-1", "other-group"],
+                    "tid": "campai-tenant-id",
+                }
+            )
 
     def test_grants_via_user_allowlist(self, settings_with_group):
         with patch("admcms_mcp.auth.get_secret") as mock_kv:
             mock_kv.return_value = json.dumps({"users": ["cms-user-oid"], "groups": []})
-            check_access({
-                "oid": "cms-user-oid",
-                "upn": "user@cmslelystad.nl",
-                "groups": [],
-                "tid": "cms-tenant",
-            })
+            check_access(
+                {
+                    "oid": "cms-user-oid",
+                    "upn": "user@cmslelystad.nl",
+                    "groups": [],
+                    "tid": "cms-tenant",
+                }
+            )
 
     def test_grants_via_group_allowlist(self, settings_with_group):
         with patch("admcms_mcp.auth.get_secret") as mock_kv:
             mock_kv.return_value = json.dumps({"users": [], "groups": ["kv-group-1"]})
-            check_access({
-                "oid": "some-oid",
-                "upn": "user@cmslelystad.nl",
-                "groups": ["kv-group-1"],
-                "tid": "cms-tenant",
-            })
+            check_access(
+                {
+                    "oid": "some-oid",
+                    "upn": "user@cmslelystad.nl",
+                    "groups": ["kv-group-1"],
+                    "tid": "cms-tenant",
+                }
+            )
 
     def test_denies_when_not_on_any_list(self, settings_with_group):
         with patch("admcms_mcp.auth.get_secret") as mock_kv:
             mock_kv.return_value = json.dumps({"users": [], "groups": []})
             with pytest.raises(Forbidden, match="allowlist"):
-                check_access({
-                    "oid": "stranger",
-                    "upn": "stranger@example.com",
-                    "groups": ["unrelated-group"],
-                    "tid": "campai-tenant-id",
-                })
+                check_access(
+                    {
+                        "oid": "stranger",
+                        "upn": "stranger@example.com",
+                        "groups": ["unrelated-group"],
+                        "tid": "campai-tenant-id",
+                    }
+                )
 
     def test_empty_allowlist_and_no_campai_group_denies(self, settings_with_group):
         with patch("admcms_mcp.auth.get_secret") as mock_kv:
             mock_kv.return_value = ""  # no secret yet
             with pytest.raises(Forbidden):
-                check_access({
-                    "oid": "user",
-                    "upn": "user@campai.nl",
-                    "groups": [],
-                    "tid": "campai-tenant-id",
-                })
+                check_access(
+                    {
+                        "oid": "user",
+                        "upn": "user@campai.nl",
+                        "groups": [],
+                        "tid": "campai-tenant-id",
+                    }
+                )
 ```
 
 - [ ] **Step 2: Run tests — expect all pass**
@@ -1752,13 +1786,16 @@ def settings_env(monkeypatch):
     monkeypatch.setenv("ENTRA_ALLOWED_TENANTS", "campai-tenant-id")
     monkeypatch.setenv("AUTH_DISABLED", "false")
     from admcms_mcp.config import get_settings
+
     get_settings.cache_clear()
 
 
 async def test_mcp_without_token_returns_401_with_www_authenticate():
     app = build_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/mcp", json={"jsonrpc": "2.0", "method": "tools/list", "id": 1})
+        response = await client.post(
+            "/mcp", json={"jsonrpc": "2.0", "method": "tools/list", "id": 1}
+        )
     assert response.status_code == 401
     assert "Bearer" in response.headers.get("www-authenticate", "")
     assert "resource_metadata" in response.headers.get("www-authenticate", "")
@@ -1785,8 +1822,10 @@ async def test_healthz_is_public():
 
 async def test_mcp_with_valid_token_and_allowlist_passes():
     claims = {"oid": "user", "upn": "u@campai.nl", "groups": [], "tid": "campai-tenant-id"}
-    with patch("admcms_mcp.server.validate_jwt", return_value=claims), \
-         patch("admcms_mcp.server.check_access", return_value=None):
+    with (
+        patch("admcms_mcp.server.validate_jwt", return_value=claims),
+        patch("admcms_mcp.server.check_access", return_value=None),
+    ):
         app = build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
@@ -1803,9 +1842,12 @@ async def test_mcp_with_valid_token_and_allowlist_passes():
 
 async def test_mcp_with_valid_token_but_not_on_allowlist_returns_403():
     from admcms_mcp.auth import Forbidden
+
     claims = {"oid": "stranger", "upn": "x@example.com", "groups": [], "tid": "campai-tenant-id"}
-    with patch("admcms_mcp.server.validate_jwt", return_value=claims), \
-         patch("admcms_mcp.server.check_access", side_effect=Forbidden("not allowed")):
+    with (
+        patch("admcms_mcp.server.validate_jwt", return_value=claims),
+        patch("admcms_mcp.server.check_access", side_effect=Forbidden("not allowed")),
+    ):
         app = build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
@@ -1819,6 +1861,7 @@ async def test_mcp_with_valid_token_but_not_on_allowlist_returns_403():
 async def test_auth_disabled_bypasses_check(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "true")
     from admcms_mcp.config import get_settings
+
     get_settings.cache_clear()
 
     app = build_app()
@@ -1906,8 +1949,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
 
     def _unauthorized(self, request: Request, detail: str) -> Response:
         resource_metadata_url = (
-            f"{request.url.scheme}://{request.url.netloc}"
-            "/.well-known/oauth-protected-resource"
+            f"{request.url.scheme}://{request.url.netloc}/.well-known/oauth-protected-resource"
         )
         www_auth = (
             f'Bearer realm="admcms-mcp", '
@@ -1928,12 +1970,14 @@ async def healthz(request: Request) -> JSONResponse:
 
 async def oauth_protected_resource(request: Request) -> JSONResponse:
     base_url = f"{request.url.scheme}://{request.url.netloc}"
-    return JSONResponse({
-        "resource": base_url,
-        "authorization_servers": ["https://login.microsoftonline.com/common/v2.0"],
-        "scopes_supported": ["admcms.read"],
-        "bearer_methods_supported": ["header"],
-    })
+    return JSONResponse(
+        {
+            "resource": base_url,
+            "authorization_servers": ["https://login.microsoftonline.com/common/v2.0"],
+            "scopes_supported": ["admcms.read"],
+            "bearer_methods_supported": ["header"],
+        }
+    )
 
 
 def _build_mcp_server() -> FastMCP:

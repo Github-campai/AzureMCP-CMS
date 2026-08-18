@@ -1,9 +1,32 @@
 import time
+from contextlib import asynccontextmanager
 
 import pytest
 from authlib.jose import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from httpx import ASGITransport, AsyncClient
+
+
+@pytest.fixture
+def app_client():
+    """Async HTTP client for an app whose lifespan is actually running.
+
+    httpx's ASGITransport does not fire lifespan events, but the MCP session
+    manager initialises its anyio task group there. Without it every request
+    reaching the mounted /mcp app dies with "Task group is not initialized" —
+    which says nothing about the code under test. Always reach for this instead
+    of wiring up ASGITransport by hand.
+    """
+
+    @asynccontextmanager
+    async def _client(app):
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                yield client
+
+    return _client
 
 
 @pytest.fixture(scope="session")

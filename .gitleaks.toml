@@ -1,0 +1,23 @@
+# Gitleaks config for AzureMCP-CMS. Default ruleset plus an allowlist for the
+# two things that trip it here and are not credentials.
+#
+# Same [[allowlists]] form as AzureMCP-inforcer.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Azure built-in role definition GUIDs (public, identical in every tenant)"
+regexTarget = "match"
+regexes = [
+  '''(?i)(role|roledefinition)id\s*=\s*'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''',
+]
+
+[[allowlists]]
+description = "Documentatie-placeholders (geen echte secrets)"
+regexTarget = "match"
+regexes = [
+  '''(?i)your-(token|secret|key|password)''',
+  '''(?i)<[a-z0-9_.-]{2,}>''',
+  '''(?i)(xxxxx|changeme|placeholder|example[_-]?(token|secret|key))''',
+]

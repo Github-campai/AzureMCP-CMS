@@ -85,7 +85,11 @@ Volledige beschrijvingen via `/admin/tools` (Bearer JWT vereist) of in [`docs/DA
 | Path | Auth | Doel |
 |---|---|---|
 | `/healthz` | public | Health check |
-| `/.well-known/oauth-protected-resource` | public | OAuth 2.1 Resource Server metadata (MCP spec) |
+| `/.well-known/oauth-protected-resource[/mcp]` | public | RFC 9728 resource metadata |
+| `/.well-known/oauth-authorization-server[/mcp]` | public | RFC 8414 authorization-server metadata |
+| `/register` | public | RFC 7591 dynamic client registration (stub) |
+| `/authorize` | public | Redirect naar Entra, scope herschreven |
+| `/token` | public | Proxy van de code/refresh-exchange naar Entra |
 | `/mcp` | Bearer JWT | MCP Streamable HTTP endpoint |
 | `/admin/tools` | Bearer JWT | Tool registry incl. input schemas |
 | `/admin/audit` | Bearer JWT | Audit log entries (filters: `tool`, `limit`, `since`, `errors_only`) |
@@ -127,13 +131,23 @@ uvicorn admcms_mcp.server:app --port 8000
 
 Test: `curl http://localhost:8000/healthz`.
 
-Tests: `pytest -v --cov=admcms_mcp` (60 tests, ~70% coverage).
+Tests: `pytest -v --cov=admcms_mcp` (279 tests). Lint: `ruff check . && ruff format --check .`
+Beide draaien in CI (`.github/workflows/ci.yml`) op elke push en PR.
 
 ## CI/CD
 
 Push naar `main` triggert GitHub Actions (`.github/workflows/deploy-to-aca.yml`) →
 `az acr build` (cloud-side, geen Docker daemon nodig) → `az containerapp update`.
 End-to-end ~3 min. Federated OIDC, geen secrets in workflow yaml.
+
+Daarnaast draaien op elke push en PR:
+- `ci.yml` — ruff, pytest, pip-audit, plus een import-check met de daadwerkelijk
+  geresolveerde dependency-set
+- `security-scan.yml` — Gitleaks, Trivy, Semgrep (ook elke nacht)
+
+Dependency-ranges hebben een bovengrens per major. Dat is niet cosmetisch:
+`mcp` 2.0 verwijderde `mcp.server.fastmcp`, dus een ongebonden range bouwde een
+image die op import crashte.
 
 ## Origine
 

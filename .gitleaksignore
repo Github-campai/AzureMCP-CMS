@@ -1,0 +1,12 @@
+# Known historical finding, kept out of the scan so the job reports on NEW leaks.
+#
+# docs/service-handleiding.md carried the literal ADMCMS_DB_PASSWORD for the
+# saazuredb SQL login. The working tree no longer contains it, but the value
+# remains in commit 2288f15 (2026-05-12) and history has not been rewritten.
+#
+#   >> The credential must be ROTATED in Azure SQL and in Key Vault
+#   >> (cms-mcp-kv-prod / admcms-db-password). Redacting the file is not the fix.
+#
+# Remove these two lines once the history is rewritten.
+2288f152288cfa268bdbcded4efd0ee1e01e429c:docs/service-handleiding.md:generic-api-key:96
+2288f152288cfa268bdbcded4efd0ee1e01e429c:docs/service-handleiding.md:generic-api-key:122

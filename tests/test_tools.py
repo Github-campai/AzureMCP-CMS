@@ -309,9 +309,7 @@ class TestGetRevenueFilters:
         from admcms_mcp.tools import get_revenue
 
         mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
-        get_revenue(
-            "2026-01-01", "2026-02-01", group_by="total", filters={"country": ["NL"]}
-        )
+        get_revenue("2026-01-01", "2026-02-01", group_by="total", filters={"country": ["NL"]})
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
         assert "DeliveryCountry IN (?)" in sql
@@ -330,7 +328,9 @@ class TestGetRevenueFilters:
         )
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
-        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+        assert (
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+        )
         assert "cs.CustSuppGroup IN (?)" in sql
         assert "G2" in params
 
@@ -339,9 +339,7 @@ class TestGetRevenueFilters:
         from admcms_mcp.tools import get_revenue
 
         mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
-        get_revenue(
-            "2026-01-01", "2026-02-01", group_by="total", filters={"make": ["MAHLE"]}
-        )
+        get_revenue("2026-01-01", "2026-02-01", group_by="total", filters={"make": ["MAHLE"]})
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
         assert "Make IN" not in sql
@@ -352,9 +350,7 @@ class TestGetRevenueFilters:
         from admcms_mcp.tools import get_revenue
 
         mock_execute.return_value = [{"Make": "MAHLE", "amount": 10.0}]
-        get_revenue(
-            "2026-01-01", "2026-02-01", group_by="make", filters={"make": ["MAHLE"]}
-        )
+        get_revenue("2026-01-01", "2026-02-01", group_by="make", filters={"make": ["MAHLE"]})
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
         assert "p.Make IN (?)" in sql
@@ -1175,9 +1171,7 @@ class TestGetKpiSummaryFilters:
         from admcms_mcp.tools import get_kpi_summary
 
         mock_execute.return_value = [{}]
-        get_kpi_summary(
-            "2026-01-01", "2026-02-01", include_ly=False, filters={"country": ["NL"]}
-        )
+        get_kpi_summary("2026-01-01", "2026-02-01", include_ly=False, filters={"country": ["NL"]})
         # header-only (fast) — single query now
         header_sql = mock_execute.call_args_list[0][0][0]
         header_params = mock_execute.call_args_list[0][0][1]
@@ -1407,9 +1401,7 @@ class TestGetOrderOriginMixFilters:
         from admcms_mcp.tools import get_order_origin_mix
 
         mock_execute.return_value = []
-        get_order_origin_mix(
-            "2026-04-01", "2026-05-01", filters={"business_unit": ["B2C"]}
-        )
+        get_order_origin_mix("2026-04-01", "2026-05-01", filters={"business_unit": ["B2C"]})
         sql = mock_execute.call_args[0][0]
         params = mock_execute.call_args[0][1]
         assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer" in sql
@@ -1448,22 +1440,49 @@ class TestGetDeadStockValidation:
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_clamps_months_without_sale_high(self, mock_execute):
-        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
-                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        mock_execute.side_effect = [
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [],
+        ]
         result = get_dead_stock(months_without_sale=999)
         assert result["summary"]["months_without_sale"] == 60
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_clamps_months_without_sale_low(self, mock_execute):
-        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
-                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        mock_execute.side_effect = [
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [],
+        ]
         result = get_dead_stock(months_without_sale=0)
         assert result["summary"]["months_without_sale"] == 1
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_clamps_negative_min_stock_value(self, mock_execute):
-        mock_execute.side_effect = [[{"total_dead_value": 0, "total_dead_count": 0,
-                                        "never_sold_value": 0, "never_sold_count": 0}], []]
+        mock_execute.side_effect = [
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [],
+        ]
         result = get_dead_stock(min_stock_value=-50.0)
         assert result["summary"]["min_stock_value"] == 0.0
 
@@ -1473,20 +1492,28 @@ class TestGetDeadStockPerProduct:
     def test_returns_dead_products_with_expected_shape(self, mock_execute):
         # Two calls: 1) summary query, 2) paged data query
         mock_execute.side_effect = [
-            [{"total_dead_value": 5000.0, "total_dead_count": 12,
-              "never_sold_value": 250.0, "never_sold_count": 3}],
-            [{
-                "Productcode": "MAH-001",
-                "Description": "Oil filter",
-                "Make": "MAHLE",
-                "Productgroup": "HOD",
-                "Warehouse": "CM",
-                "ActualStock": 47,
-                "ActualStockValue": 1245.30,
-                "CostPrice": 26.50,
-                "LastSaleDate": "2024-02-14",
-                "days_since_sale": 824,
-            }],
+            [
+                {
+                    "total_dead_value": 5000.0,
+                    "total_dead_count": 12,
+                    "never_sold_value": 250.0,
+                    "never_sold_count": 3,
+                }
+            ],
+            [
+                {
+                    "Productcode": "MAH-001",
+                    "Description": "Oil filter",
+                    "Make": "MAHLE",
+                    "Productgroup": "HOD",
+                    "Warehouse": "CM",
+                    "ActualStock": 47,
+                    "ActualStockValue": 1245.30,
+                    "CostPrice": 26.50,
+                    "LastSaleDate": "2024-02-14",
+                    "days_since_sale": 824,
+                }
+            ],
         ]
         result = get_dead_stock(months_without_sale=12, min_stock_value=100.0)
         assert result["error"] is None
@@ -1505,8 +1532,14 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_default_excludes_inactive_warehouses(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
             [],
         ]
         get_dead_stock()
@@ -1518,8 +1551,14 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_include_inactive_warehouses_omits_filter(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
             [],
         ]
         get_dead_stock(include_inactive_warehouses=True)
@@ -1529,13 +1568,29 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_paging_summary_reflects_full_page(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
-            [{"Productcode": f"P{i}", "Description": "x", "Make": "x",
-              "Productgroup": "x", "Warehouse": "CM", "ActualStock": 1,
-              "ActualStockValue": 1.0, "CostPrice": 1.0,
-              "LastSaleDate": "2024-01-01", "days_since_sale": 800}
-             for i in range(5)],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [
+                {
+                    "Productcode": f"P{i}",
+                    "Description": "x",
+                    "Make": "x",
+                    "Productgroup": "x",
+                    "Warehouse": "CM",
+                    "ActualStock": 1,
+                    "ActualStockValue": 1.0,
+                    "CostPrice": 1.0,
+                    "LastSaleDate": "2024-01-01",
+                    "days_since_sale": 800,
+                }
+                for i in range(5)
+            ],
         ]
         result = get_dead_stock(limit=5)
         assert result["summary"]["has_more"] is True
@@ -1544,10 +1599,18 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_cutoff_date_is_today_minus_months(self, mock_execute):
         import datetime as _dt
+
         from admcms_mcp.query_helpers import subtract_months
+
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
             [],
         ]
         result = get_dead_stock(months_without_sale=6)
@@ -1563,15 +1626,29 @@ class TestGetDeadStockAggregated:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_group_by_make_returns_aggregated_shape(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 100000.0, "total_dead_count": 250,
-              "never_sold_value": 5000.0, "never_sold_count": 20}],
             [
-                {"Make": "MAHLE", "dead_sku_count": 38,
-                 "total_stock_value": 24510.0, "avg_months_since_sale": 19.4,
-                 "oldest_last_sale": "2022-08-03"},
-                {"Make": "BOSCH", "dead_sku_count": 22,
-                 "total_stock_value": 14200.0, "avg_months_since_sale": 14.1,
-                 "oldest_last_sale": "2023-01-15"},
+                {
+                    "total_dead_value": 100000.0,
+                    "total_dead_count": 250,
+                    "never_sold_value": 5000.0,
+                    "never_sold_count": 20,
+                }
+            ],
+            [
+                {
+                    "Make": "MAHLE",
+                    "dead_sku_count": 38,
+                    "total_stock_value": 24510.0,
+                    "avg_months_since_sale": 19.4,
+                    "oldest_last_sale": "2022-08-03",
+                },
+                {
+                    "Make": "BOSCH",
+                    "dead_sku_count": 22,
+                    "total_stock_value": 14200.0,
+                    "avg_months_since_sale": 14.1,
+                    "oldest_last_sale": "2023-01-15",
+                },
             ],
         ]
         result = get_dead_stock(group_by="make")
@@ -1590,11 +1667,23 @@ class TestGetDeadStockAggregated:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_group_by_productgroup_uses_productgroup_column(self, mock_execute):
         mock_execute.side_effect = [
-            [{"total_dead_value": 0, "total_dead_count": 0,
-              "never_sold_value": 0, "never_sold_count": 0}],
-            [{"Productgroup": "HOD", "dead_sku_count": 10,
-              "total_stock_value": 500.0, "avg_months_since_sale": 16.0,
-              "oldest_last_sale": "2023-05-01"}],
+            [
+                {
+                    "total_dead_value": 0,
+                    "total_dead_count": 0,
+                    "never_sold_value": 0,
+                    "never_sold_count": 0,
+                }
+            ],
+            [
+                {
+                    "Productgroup": "HOD",
+                    "dead_sku_count": 10,
+                    "total_stock_value": 500.0,
+                    "avg_months_since_sale": 16.0,
+                    "oldest_last_sale": "2023-05-01",
+                }
+            ],
         ]
         result = get_dead_stock(group_by="productgroup")
         assert result["data"][0]["Productgroup"] == "HOD"
@@ -1707,9 +1796,7 @@ class TestGetFilterOptions:
         assert "error" not in second
 
     @patch("admcms_mcp.tools.execute_query_params")
-    def test_partial_result_is_not_cached_fresh_and_merges_prior_good(
-        self, mock_execute
-    ):
+    def test_partial_result_is_not_cached_fresh_and_merges_prior_good(self, mock_execute):
         from admcms_mcp.tools import get_filter_options
 
         # Call 1: everything ok EXCEPT productgroup -> partial, so NOT cached fresh.
@@ -1734,6 +1821,59 @@ class TestGetFilterOptions:
         assert second["make"] == ["MAHLE"]  # merged from prior known-good
         assert second["productgroup"] == ["HOD"]  # recovered this round
         assert "make" in second["error"]
+
+    @patch("admcms_mcp.tools.time.monotonic")
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_partial_result_is_retried_on_a_freshly_booted_process(
+        self, mock_execute, mock_monotonic
+    ):
+        """A failed refresh must be retried even seconds after process start.
+
+        time.monotonic() counts from boot, so a 0.0 "stale" marker read as
+        *fresh* on any process younger than the 6h TTL -- i.e. every night after
+        the scheduled container restart. Pinning the clock low reproduces that
+        without depending on the host's uptime.
+        """
+        from admcms_mcp.tools import get_filter_options
+
+        mock_monotonic.return_value = 12.0  # 12 seconds since boot
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            RuntimeError("boom"),
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            [{"Productgroup": "HOD"}],
+        ]
+
+        first = get_filter_options()
+        assert "productgroup" in first["error"]
+
+        second = get_filter_options()
+        assert mock_execute.call_count == 8, "partial result was served from cache"
+        assert second["productgroup"] == ["HOD"]
+        assert "error" not in second
+
+    @patch("admcms_mcp.tools.time.monotonic")
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_successful_result_is_still_cached_on_a_freshly_booted_process(
+        self, mock_execute, mock_monotonic
+    ):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_monotonic.return_value = 12.0
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            [{"Productgroup": "HOD"}],
+        ]
+
+        get_filter_options()
+        get_filter_options()
+        assert mock_execute.call_count == 4
 
 
 # =========================================================================
@@ -1829,7 +1969,9 @@ class TestCustSuppTypeGuardOnCustomerJoins:
         mock_execute.return_value = []
         get_revenue_by_business_unit("2026-01-01", "2026-02-01")
         sql = mock_execute.call_args[0][0]
-        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+        assert (
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+        )
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_top_customers_join_carries_custsupptype(self, mock_execute):
@@ -1838,7 +1980,9 @@ class TestCustSuppTypeGuardOnCustomerJoins:
         mock_execute.return_value = []
         get_top_customers("2026-01-01", "2026-02-01")
         sql = mock_execute.call_args[0][0]
-        assert "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+        assert (
+            "JOIN CUSTSUPPLIER cs ON cs.CustSuppnr = si.Customer AND cs.CustSuppType = '1'" in sql
+        )
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_margin_segment_join_carries_custsupptype(self, mock_execute):
@@ -1857,9 +2001,7 @@ class TestExcludeCreditsFlag:
         from admcms_mcp.tools import get_revenue
 
         mock_execute.return_value = [{"total_amount": 100.0, "invoice_count": 5}]
-        get_revenue(
-            "2026-01-01", "2026-02-01", group_by="total", exclude_credits=True
-        )
+        get_revenue("2026-01-01", "2026-02-01", group_by="total", exclude_credits=True)
         sql = mock_execute.call_args[0][0]
         assert "InvoiceType = '0'" in sql
 
@@ -1873,22 +2015,16 @@ class TestExcludeCreditsFlag:
         assert "InvoiceType" not in sql
 
     @patch("admcms_mcp.tools.execute_query_params")
-    def test_get_margin_report_exclude_credits_true_adds_invoicetype_filter(
-        self, mock_execute
-    ):
+    def test_get_margin_report_exclude_credits_true_adds_invoicetype_filter(self, mock_execute):
         from admcms_mcp.tools import get_margin_report
 
         mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
-        get_margin_report(
-            "2026-01-01", "2026-02-01", group_by="total", exclude_credits=True
-        )
+        get_margin_report("2026-01-01", "2026-02-01", group_by="total", exclude_credits=True)
         sql = mock_execute.call_args[0][0]
         assert "si.InvoiceType = '0'" in sql
 
     @patch("admcms_mcp.tools.execute_query_params")
-    def test_get_margin_report_exclude_credits_false_default_omits_filter(
-        self, mock_execute
-    ):
+    def test_get_margin_report_exclude_credits_false_default_omits_filter(self, mock_execute):
         from admcms_mcp.tools import get_margin_report
 
         mock_execute.return_value = [{"turnover": 100.0, "cost": 60.0}]
@@ -1897,22 +2033,16 @@ class TestExcludeCreditsFlag:
         assert "InvoiceType" not in sql
 
     @patch("admcms_mcp.tools.execute_query_params")
-    def test_get_kpi_summary_exclude_credits_true_adds_invoicetype_filter(
-        self, mock_execute
-    ):
+    def test_get_kpi_summary_exclude_credits_true_adds_invoicetype_filter(self, mock_execute):
         from admcms_mcp.tools import get_kpi_summary
 
         mock_execute.return_value = [{}]
-        get_kpi_summary(
-            "2026-01-01", "2026-02-01", include_ly=False, exclude_credits=True
-        )
+        get_kpi_summary("2026-01-01", "2026-02-01", include_ly=False, exclude_credits=True)
         header_sql = mock_execute.call_args_list[0][0][0]
         assert "InvoiceType = '0'" in header_sql
 
     @patch("admcms_mcp.tools.execute_query_params")
-    def test_get_kpi_summary_exclude_credits_false_default_omits_filter(
-        self, mock_execute
-    ):
+    def test_get_kpi_summary_exclude_credits_false_default_omits_filter(self, mock_execute):
         from admcms_mcp.tools import get_kpi_summary
 
         mock_execute.return_value = [{}]
