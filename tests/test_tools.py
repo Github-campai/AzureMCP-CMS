@@ -1544,6 +1544,7 @@ class TestGetDeadStockPerProduct:
     @patch("admcms_mcp.tools.execute_query_params")
     def test_cutoff_date_is_today_minus_months(self, mock_execute):
         import datetime as _dt
+
         from admcms_mcp.query_helpers import subtract_months
         mock_execute.side_effect = [
             [{"total_dead_value": 0, "total_dead_count": 0,

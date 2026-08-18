@@ -1,0 +1,68 @@
+name: CI
+
+# Runs on every push and PR. The deploy workflow only smoke-tested /healthz
+# after the fact, so a dependency that breaks the import — mcp 2.0 removing
+# `mcp.server.fastmcp`, for instance — was not caught until it was already
+# built. This job catches it before the image exists.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff (lint + format check)
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Pytest
+        run: pytest -q --cov=admcms_mcp --cov-report=term-missing
+
+      - name: Verify the app imports with the resolved dependency set
+        # A green test suite still leaves room for a broken production import
+        # path; this asserts the module tree the container actually loads.
+        run: python -c "from admcms_mcp.server import app; print('import ok')"
+        env:
+          KEY_VAULT_URI: https://example.vault.azure.net/
+          ENTRA_APP_ID: 00000000-0000-0000-0000-000000000000
+          ENTRA_ALLOWED_TENANTS: 00000000-0000-0000-0000-000000000000
+          AUTH_DISABLED: "true"
+
+  audit:
+    name: pip-audit (CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Audit installed dependencies
+        run: pip-audit --strict --progress-spinner off

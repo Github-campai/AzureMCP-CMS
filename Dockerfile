@@ -17,8 +17,15 @@ COPY src ./src
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
 
+# Run as non-root (Trivy DS-0002). The audit SQLite file lives under /tmp,
+# which stays writable for an unprivileged user.
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8000
 
-ENV PORT=8000
+ENV PORT=8000 \
+    PYTHONUNBUFFERED=1
 
-CMD ["sh", "-c", "uvicorn admcms_mcp.server:app --host 0.0.0.0 --port $PORT"]
+CMD ["sh", "-c", "uvicorn admcms_mcp.server:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'"]

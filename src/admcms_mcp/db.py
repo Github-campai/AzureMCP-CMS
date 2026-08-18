@@ -4,7 +4,8 @@ import logging
 import queue
 import re
 import threading
-from contextlib import contextmanager
+import time
+from contextlib import contextmanager, suppress
 from typing import Any
 
 import pyodbc
@@ -34,8 +35,6 @@ _DANGEROUS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-import time as _time_mod
-
 _MAX_ROWS_HARD_LIMIT = 500
 # Line-grain aggregations over a 12-month range take ~60-75s on this DB; give
 # them room to finish rather than erroring at the ODBC timeout (App Service
@@ -62,14 +61,14 @@ _query_cache_lock = threading.Lock()
 def _cache_get(key: tuple) -> list | None:
     with _query_cache_lock:
         hit = _query_cache.get(key)
-        if hit is not None and (_time_mod.monotonic() - hit[0]) < _QUERY_CACHE_TTL_SECONDS:
+        if hit is not None and (time.monotonic() - hit[0]) < _QUERY_CACHE_TTL_SECONDS:
             return hit[1]
     return None
 
 
 def _cache_put(key: tuple, result: list) -> None:
     with _query_cache_lock:
-        _query_cache[key] = (_time_mod.monotonic(), result)
+        _query_cache[key] = (time.monotonic(), result)
 
 
 def validate_query(sql: str) -> None:
@@ -140,10 +139,8 @@ def _acquire() -> pyodbc.Connection:
         return conn
     except pyodbc.Error:
         logger.warning("Pooled DB connection is dead; reconnecting.")
-        try:
+        with suppress(Exception):
             conn.close()
-        except Exception:
-            pass
         return _new_connection()
 
 
@@ -156,10 +153,8 @@ def _release(conn: pyodbc.Connection, *, healthy: bool = True) -> None:
             return
         except queue.Full:
             pass
-    try:
+    with suppress(Exception):
         conn.close()
-    except Exception:
-        pass
     with _pool_lock:
         _pool_created -= 1
 
@@ -180,7 +175,6 @@ def _borrow():
 
 def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
     """Validate and execute a read-only SQL query; return rows as dicts."""
-    import time as _time
 
     from admcms_mcp import audit as _audit
 
@@ -192,7 +186,7 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
     if cached is not None:
         return cached
 
-    _start = _time.monotonic()
+    _start = time.monotonic()
     with _borrow() as conn:
         cursor = conn.cursor()
         cursor.execute(sql)
@@ -200,7 +194,7 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
         rows = cursor.fetchmany(effective_rows)
     result = [dict(zip(columns, row, strict=False)) for row in rows]
     _audit.record_sql(
-        sql, None, int((_time.monotonic() - _start) * 1000), len(result)
+        sql, None, int((time.monotonic() - _start) * 1000), len(result)
     )
     _cache_put(cache_key, result)
     return result
@@ -214,7 +208,6 @@ def execute_query_params(
     Same validate_query guard, same row cap, but supports parameterized
     SQL so tool wrappers can pass user-controlled values safely.
     """
-    import time as _time
 
     from admcms_mcp import audit as _audit
 
@@ -226,7 +219,7 @@ def execute_query_params(
     if cached is not None:
         return cached
 
-    _start = _time.monotonic()
+    _start = time.monotonic()
     with _borrow() as conn:
         cursor = conn.cursor()
         cursor.execute(sql, params)
@@ -234,7 +227,7 @@ def execute_query_params(
         rows = cursor.fetchmany(effective_rows)
     result = [dict(zip(columns, row, strict=False)) for row in rows]
     _audit.record_sql(
-        sql, params, int((_time.monotonic() - _start) * 1000), len(result)
+        sql, params, int((time.monotonic() - _start) * 1000), len(result)
     )
     _cache_put(cache_key, result)
     return result

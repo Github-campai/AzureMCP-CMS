@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from datetime import UTC
+
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
@@ -25,8 +27,11 @@ from admcms_mcp.admin import build_admin_routes
 from admcms_mcp.audit import audit_call, current_user
 from admcms_mcp.auth import Forbidden, InvalidToken, check_access, validate_jwt
 from admcms_mcp.config import get_settings
+from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
+from admcms_mcp.oauth import build_oauth_routes, protected_resource_metadata_url
 from admcms_mcp.schema import SCHEMA_KNOWLEDGE
 from admcms_mcp.tools import detect_price_anomalies as _detect_price_anomalies
+from admcms_mcp.tools import get_country_segment_matrix as _get_country_segment_matrix
 from admcms_mcp.tools import get_credit_note_analysis as _get_credit_note_analysis
 from admcms_mcp.tools import get_customer_orders as _get_customer_orders
 from admcms_mcp.tools import get_dead_stock as _get_dead_stock
@@ -38,7 +43,6 @@ from admcms_mcp.tools import get_margin_report as _get_margin_report
 from admcms_mcp.tools import get_order_origin_mix as _get_order_origin_mix
 from admcms_mcp.tools import get_payment_method_stats as _get_payment_method_stats
 from admcms_mcp.tools import get_revenue as _get_revenue
-from admcms_mcp.tools import get_country_segment_matrix as _get_country_segment_matrix
 from admcms_mcp.tools import get_revenue_by_business_unit as _get_revenue_by_business_unit
 from admcms_mcp.tools import get_salesrep_performance as _get_salesrep_performance
 from admcms_mcp.tools import get_schema as _get_schema
@@ -52,7 +56,10 @@ from admcms_mcp.tools import search_products as _search_products
 
 logger = logging.getLogger(__name__)
 
-_PUBLIC_PATHS = frozenset({"/", "/healthz", "/.well-known/oauth-protected-resource"})
+#: Paths reachable without a bearer token. The OAuth discovery, registration and
+#: token endpoints have to be public — a client that cannot yet authenticate
+#: needs them to find out how.
+_PUBLIC_PATHS = frozenset({"/", "/healthz"}) | OAUTH_PUBLIC_PATHS
 
 
 class McpTrailingSlashMiddleware(BaseHTTPMiddleware):
@@ -83,16 +90,19 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         if path in _PUBLIC_PATHS:
             return await call_next(request)
 
-        # Copilot Studio's preview MCP connector sends GET probes on /mcp/
-        # without the bearer token after a successful authenticated POST.
-        # Letting these GETs through bypasses the preview bug; the MCP
-        # library still requires a valid session id (which only an authed
-        # POST initialize can produce), so no unauthenticated data leaks.
-        if request.method == "GET" and path.startswith("/mcp"):
-            return await call_next(request)
-
         try:
             settings = get_settings()
+
+            # Copilot Studio's preview MCP connector used to send unauthenticated
+            # GET probes to /mcp after a successful authenticated POST. Letting
+            # those through means anyone can hold an SSE stream open, so it is
+            # opt-in via env var rather than the default.
+            if (
+                settings.allow_unauthenticated_mcp_get
+                and request.method == "GET"
+                and path.startswith("/mcp")
+            ):
+                return await call_next(request)
             if settings.auth_disabled:
                 request.state.user_claims = {"oid": "local-dev", "upn": "dev@localhost"}
                 current_user.set("dev@localhost")
@@ -131,9 +141,10 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
 
     def _unauthorized(self, request: Request, detail: str) -> Response:
         safe_detail = _sanitize(detail)
-        resource_metadata_url = (
-            f"{request.url.scheme}://{request.url.netloc}/.well-known/oauth-protected-resource"
-        )
+        # Must be the externally-visible https URL: behind the Container Apps
+        # ingress `request.url.scheme` is plain http, and a client that is told
+        # to fetch metadata over http either refuses or loses the redirect.
+        resource_metadata_url = protected_resource_metadata_url(request)
         www_auth = (
             f'Bearer realm="admcms-mcp", '
             f'error="invalid_token", '
@@ -252,44 +263,6 @@ async def index(request: Request) -> HTMLResponse:
             body=body,
         )
     )
-
-
-def _public_base_url(request: Request) -> str:
-    """Resolve our externally-visible base URL, honouring proxy headers.
-
-    Azure Container Apps terminates TLS at the ingress, so uvicorn sees
-    plain HTTP. Without trusting X-Forwarded-* the metadata response
-    would advertise http:// URLs, which OAuth clients reject in
-    redirect/audience checks.
-    """
-    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
-    host = request.headers.get("x-forwarded-host") or request.url.netloc
-    return f"{scheme}://{host}"
-
-
-async def oauth_protected_resource(request: Request) -> JSONResponse:
-    settings = get_settings()
-    base_url = _public_base_url(request)
-    # Advertise one authorization server per allowed tenant, plus the generic
-    # /common endpoint as a fallback. Dynamic-discovery MCP clients
-    # (Copilot Studio preview) pick the matching tenant for the signed-in user.
-    auth_servers = [
-        f"https://login.microsoftonline.com/{tid}/v2.0"
-        for tid in settings.entra_allowed_tenants
-        if tid
-    ]
-    auth_servers.append("https://login.microsoftonline.com/common/v2.0")
-
-    body = {
-        "resource": base_url,
-        "resource_name": "ADMCMS MCP",
-        "resource_documentation": "https://github.com/Github-campai/AzureMCP-CMS",
-        "authorization_servers": auth_servers,
-        "scopes_supported": [f"api://{settings.entra_app_id}/admcms.read"],
-        "bearer_methods_supported": ["header"],
-        "resource_signing_alg_values_supported": ["RS256"],
-    }
-    return JSONResponse(body)
 
 
 def _audited(tool_name: str, args: dict, call):
@@ -1082,7 +1055,7 @@ def _build_mcp_server() -> FastMCP:
         "down" and the failing components carry an error message.
         """
         import time
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from admcms_mcp.db import execute_query
 
@@ -1090,7 +1063,7 @@ def _build_mcp_server() -> FastMCP:
             "status": "ok",
             "server": {
                 "name": "admcms-mcp",
-                "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "time_utc": datetime.now(UTC).isoformat(timespec="seconds"),
                 "tool_count": 23,
             },
             "database": {"status": "ok", "latency_ms": None, "error": None},
@@ -1157,11 +1130,7 @@ def build_app() -> Starlette:
     routes = [
         Route("/", index, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
-        Route(
-            "/.well-known/oauth-protected-resource",
-            oauth_protected_resource,
-            methods=["GET"],
-        ),
+        *build_oauth_routes(),
         *build_admin_routes(mcp),
         Mount("/mcp", app=mcp_asgi_app),
     ]
@@ -1174,6 +1143,9 @@ def build_app() -> Starlette:
             allow_origins=["*"],
             allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["*"],
+            # Browser-based MCP clients cannot see these unless they are exposed,
+            # and without WWW-Authenticate they cannot discover the OAuth flow.
+            expose_headers=["WWW-Authenticate", "Mcp-Session-Id", "Mcp-Protocol-Version"],
         ),
         Middleware(McpTrailingSlashMiddleware),
         Middleware(EntraAuthMiddleware),

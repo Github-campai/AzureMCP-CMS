@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     entra_allowed_tenants: list[str]
     campai_allowed_group: str = ""  # optional; empty disables group check
 
+    # Authority segment the OAuth proxy sends users to. "organizations" matches
+    # this app's AzureADMultipleOrgs audience: any work/school tenant may sign
+    # in, and validate_jwt still rejects tenants outside entra_allowed_tenants.
+    entra_authority: str = "organizations"
+
+    # Externally-visible base URL, e.g. https://admcms.campai.nl. Leave empty to
+    # derive it from the ingress' X-Forwarded-* headers. Set it as soon as a
+    # custom domain fronts the app, so the published OAuth metadata names that
+    # domain instead of the Container Apps hostname.
+    public_base_url: str = ""
+
     # Database connection (non-secret parts; password comes from Key Vault)
     admcms_server: str = "cmsnl.database.windows.net"
     admcms_database: str = "ADMCMS-PRODUCTION-REPL01"
@@ -46,6 +57,13 @@ class Settings(BaseSettings):
 
     # Escape hatches (development only)
     auth_disabled: bool = False
+
+    # Escape hatch for Copilot Studio's preview MCP connector, which used to
+    # send unauthenticated GET probes to /mcp after a successful authenticated
+    # POST. Off by default: an unauthenticated GET otherwise holds an SSE stream
+    # open on a 0.5-vCPU app. Flip to true (env var, no redeploy) only if a
+    # client regresses.
+    allow_unauthenticated_mcp_get: bool = False
 
     @classmethod
     def settings_customise_sources(

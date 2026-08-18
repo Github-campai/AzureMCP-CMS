@@ -1,0 +1,33 @@
+version: 2
+
+# Same setup as AzureMCP-inforcer. Weekly rather than daily: this repo had no
+# Dependabot at all, and a daily cadence there produced a 15-PR backlog nobody
+# triaged.
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      dev-dependencies:
+        patterns: ["pytest*", "ruff", "pip-audit", "cryptography"]
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "docker"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "ci"
