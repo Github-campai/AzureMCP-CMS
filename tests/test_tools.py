@@ -1822,6 +1822,59 @@ class TestGetFilterOptions:
         assert second["productgroup"] == ["HOD"]  # recovered this round
         assert "make" in second["error"]
 
+    @patch("admcms_mcp.tools.time.monotonic")
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_partial_result_is_retried_on_a_freshly_booted_process(
+        self, mock_execute, mock_monotonic
+    ):
+        """A failed refresh must be retried even seconds after process start.
+
+        time.monotonic() counts from boot, so a 0.0 "stale" marker read as
+        *fresh* on any process younger than the 6h TTL -- i.e. every night after
+        the scheduled container restart. Pinning the clock low reproduces that
+        without depending on the host's uptime.
+        """
+        from admcms_mcp.tools import get_filter_options
+
+        mock_monotonic.return_value = 12.0  # 12 seconds since boot
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            RuntimeError("boom"),
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            [{"Productgroup": "HOD"}],
+        ]
+
+        first = get_filter_options()
+        assert "productgroup" in first["error"]
+
+        second = get_filter_options()
+        assert mock_execute.call_count == 8, "partial result was served from cache"
+        assert second["productgroup"] == ["HOD"]
+        assert "error" not in second
+
+    @patch("admcms_mcp.tools.time.monotonic")
+    @patch("admcms_mcp.tools.execute_query_params")
+    def test_successful_result_is_still_cached_on_a_freshly_booted_process(
+        self, mock_execute, mock_monotonic
+    ):
+        from admcms_mcp.tools import get_filter_options
+
+        mock_monotonic.return_value = 12.0
+        mock_execute.side_effect = [
+            [{"CustSuppGroup": "ND"}],
+            [{"DeliveryCountry": "NL"}],
+            [{"Make": "MAHLE"}],
+            [{"Productgroup": "HOD"}],
+        ]
+
+        get_filter_options()
+        get_filter_options()
+        assert mock_execute.call_count == 4
+
 
 # =========================================================================
 # Fix slice: line-grain turnover excl. Supplier #81 (VDM PART) + customer-side

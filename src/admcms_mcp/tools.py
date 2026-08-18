@@ -2620,14 +2620,19 @@ _filter_options_lock = threading.Lock()
 # {"data": <last result dict without business_unit/error>, "ts": <monotonic seconds>}.
 # ts is only advanced to "fresh" on a fully-successful refresh; a partial/failed
 # refresh keeps ts stale so the next call retries the missing dimensions.
-_filter_options_cache: dict[str, Any] = {"data": None, "ts": 0.0}
+# `ts` is None whenever the cached data must not be served: an explicit sentinel
+# rather than 0.0, because time.monotonic() counts from boot. On a container that
+# started less than the TTL ago -- which is every night here, thanks to the
+# nightly restart -- `now - 0.0` is *below* the TTL, so a failed refresh was
+# served as fresh for hours instead of being retried.
+_filter_options_cache: dict[str, Any] = {"data": None, "ts": None}
 
 
 def _reset_filter_options_cache() -> None:
     """Clear the in-process cache (used by tests to isolate cases)."""
     with _filter_options_lock:
         _filter_options_cache["data"] = None
-        _filter_options_cache["ts"] = 0.0
+        _filter_options_cache["ts"] = None
 
 
 def get_filter_options() -> dict[str, Any]:
@@ -2654,7 +2659,12 @@ def get_filter_options() -> dict[str, Any]:
     """
     now = time.monotonic()
     cached = _filter_options_cache["data"]
-    if cached is not None and (now - _filter_options_cache["ts"]) < _FILTER_OPTIONS_TTL_SECONDS:
+    fresh_since = _filter_options_cache["ts"]
+    if (
+        cached is not None
+        and fresh_since is not None
+        and (now - fresh_since) < _FILTER_OPTIONS_TTL_SECONDS
+    ):
         result = {k: list(v) for k, v in cached.items()}
         result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
         return result
@@ -2679,7 +2689,7 @@ def get_filter_options() -> dict[str, Any]:
         _filter_options_cache["data"] = {k: list(v) for k, v in dims.items()}
         # Only treat as fresh when every dimension succeeded; otherwise force a retry
         # on the next call instead of caching a partial result for the full TTL.
-        _filter_options_cache["ts"] = now if not errors else 0.0
+        _filter_options_cache["ts"] = now if not errors else None
 
     result: dict[str, Any] = {k: list(v) for k, v in dims.items()}
     result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
