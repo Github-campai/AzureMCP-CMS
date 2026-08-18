@@ -27,7 +27,7 @@ from starlette.routing import Mount, Route
 from admcms_mcp.admin import build_admin_routes
 from admcms_mcp.audit import audit_call, current_user
 from admcms_mcp.auth import Forbidden, InvalidToken, check_access, validate_jwt
-from admcms_mcp.branding import ICON_MEDIA_TYPE, ICON_ROUTE, icon_bytes, server_icons
+from admcms_mcp.branding import ICON_ROUTE, icon_bytes, icon_media_type, server_icons
 from admcms_mcp.config import get_settings
 from admcms_mcp.db import _MAX_ROWS_HARD_LIMIT, reset_truncation, was_truncated
 from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
@@ -178,7 +178,9 @@ async def icon(request: Request) -> Response:
         return JSONResponse({"error": "not_found", "detail": "No icon asset"}, status_code=404)
     return Response(
         content=data,
-        media_type=ICON_MEDIA_TYPE,
+        # Detected from the bytes: a file saved as WebP but named .png would
+        # otherwise be served as image/png and fail to render.
+        media_type=icon_media_type(),
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
