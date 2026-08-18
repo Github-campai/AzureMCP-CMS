@@ -87,6 +87,8 @@ def public_base_url(request: Request) -> str:
     scheme = forwarded_proto.split(",")[0].strip() or request.url.scheme
     forwarded_host = request.headers.get("x-forwarded-host", "")
     host = forwarded_host.split(",")[0].strip() or request.url.netloc
+    # Builds a URL, not an HTML response; there is no Flask view here.
+    # nosemgrep: python.flask.security.audit.directly-returned-format-string.directly-returned-format-string
     return f"{scheme}://{host}"
 
 

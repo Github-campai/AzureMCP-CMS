@@ -224,6 +224,7 @@ async def index(request: Request) -> HTMLResponse:
         # Entra puts the tenant id in the query string; escape it rather than
         # reflecting attacker-controlled markup back into the page.
         tenant = html.escape(params.get("tenant", ""))
+        # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- `tenant` is html.escape'd above
         tenant_html = f"<p>Tenant: <code>{tenant}</code></p>" if tenant else ""
         return _page(
             title="Consent verleend",
@@ -247,7 +248,9 @@ async def index(request: Request) -> HTMLResponse:
             status_code=400,
             body=(
                 "<p>Microsoft Entra heeft de aanvraag afgewezen.</p>"
+                # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- `err` is html.escape'd above
                 f"<p><strong>Error:</strong> <code>{err}</code></p>"
+                # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format -- `desc` is html.escape'd above
                 f"<p><strong>Detail:</strong> {desc}</p>"
                 "<p>Neem contact op met Campai (<a href='mailto:Janneke@campai.nl'>"
                 "Janneke@campai.nl</a>) als dit blijft optreden.</p>"
