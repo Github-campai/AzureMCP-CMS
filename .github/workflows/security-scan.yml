@@ -19,7 +19,7 @@ jobs:
     name: Gitleaks (secrets)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # scan the full history
       - name: Run gitleaks
@@ -31,7 +31,7 @@ jobs:
     name: Trivy (CVEs in deps + Dockerfile)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
@@ -48,7 +48,7 @@ jobs:
     name: Semgrep (SAST)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
