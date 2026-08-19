@@ -46,12 +46,13 @@ Lid maken (CMS-zijde): CMS IT-admin in hun eigen Entra portal — zie [`docs/ONB
 - **CMS eindgebruiker — hoe gebruik ik dit in Claude (simpel)?** → [`docs/CMS-USER-INSTALL.md`](docs/CMS-USER-INSTALL.md)
 - **CMS eindgebruiker — alle clients (Claude, Cursor, VS Code, Copilot Studio)?** → [`docs/CLIENT-SETUP.md`](docs/CLIENT-SETUP.md)
 - **Campai ops — hoe deploy/restart/log ik?** → [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+- **Hoe werkt de code (flows, auth, groepen, tools)?** → [`docs/ARCHITECTUUR.md`](docs/ARCHITECTUUR.md) (levende documentatie)
 - **Iemand nieuwe op een MCP-project — hoe is dit gebouwd?** → [`docs/superpowers/specs/2026-05-12-azuremcp-cms-design.md`](docs/superpowers/specs/2026-05-12-azuremcp-cms-design.md)
 
 ## Wat doet dit?
 
-21 read-only MCP tools op de ADMCMS database (Azure SQL `cmsnl`), plus een
-`health_check` diagnose-tool. Voorbeelden van vragen die een AI-assistent kan
+23 read-only datatools op de ADMCMS database (Azure SQL `cmsnl`), plus
+`describe_server` en `health_check` (25 tools totaal). Voorbeelden van vragen die een AI-assistent kan
 beantwoorden:
 
 - "Wat zijn onze top 10 klanten dit jaar versus vorig jaar?"
@@ -64,21 +65,23 @@ De AI roept de juiste tool aan (`get_top_customers`, `detect_price_anomalies`,
 parametriseert, valideert SELECT-only, en geeft JSON terug. Elke call wordt
 geaudit met user, query, duur.
 
-## Tools (21)
+## Tools (25)
 
 | Categorie | Tools |
 |---|---|
-| Diagnose | `health_check` |
-| Schema | `query_database`, `get_schema`, `get_lookups` |
-| Producten | `search_products`, `get_stock_levels`, `get_supplier_purchases` |
-| Omzet | `get_revenue`, `get_revenue_by_business_unit`, `get_margin_report`, `get_kpi_summary`, `get_top_customers` |
+| Meta / diagnose | `describe_server`, `health_check` |
+| Schema | `query_database`, `get_schema`, `get_lookups`, `get_filter_options` |
+| Producten / voorraad | `search_products`, `get_stock_levels`, `get_dead_stock`, `get_supplier_purchases` |
+| Omzet | `get_revenue`, `get_revenue_by_business_unit`, `get_margin_report`, `get_kpi_summary`, `get_top_customers`, `get_country_segment_matrix` |
 | Logistiek | `get_shipping_summary`, `get_shipping_cost_analysis` |
 | Klanten/orders | `get_customer_orders`, `detect_price_anomalies` |
 | Financieel | `get_credit_note_analysis`, `get_payment_method_stats` |
 | Sales | `get_salesrep_performance`, `get_discount_analysis`, `get_order_origin_mix` |
 
 Allemaal SELECT-only, parameterized, met SQL identifier validation en audit log.
-Volledige beschrijvingen via `/admin/tools` (Bearer JWT vereist) of in [`docs/DATABASE-KENNIS/ADMCMS_Query_Cookbook.md`](docs/DATABASE-KENNIS/ADMCMS_Query_Cookbook.md).
+Volledige beschrijvingen (doel, args, tabellen, filters, paginatie) in
+[`docs/ARCHITECTUUR.md`](docs/ARCHITECTUUR.md#6-tools--wat-er-is-en-wat-ze-doen), live via `/admin/tools`
+(Bearer JWT vereist) of in [`docs/DATABASE-KENNIS/ADMCMS_Query_Cookbook.md`](docs/DATABASE-KENNIS/ADMCMS_Query_Cookbook.md).
 
 ## Endpoints
 
