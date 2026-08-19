@@ -5,7 +5,7 @@
 > auth, autorisatie, endpoints, tools, data-laag, config of deploy (zie [`CLAUDE.md`](../CLAUDE.md)).
 > Verifieer bij twijfel altijd tegen de code; de bestandsverwijzingen hieronder zijn daarvoor.
 >
-> Laatst geverifieerd tegen commit `3909faa` (main) — 2026-08-19.
+> Laatst geverifieerd tegen commit `6e10ee6` (main) — 2026-08-19.
 
 ---
 
@@ -53,7 +53,7 @@ flowchart LR
         OA[OAuth-proxy<br/>/.well-known /register /authorize /token]
         MCP[FastMCP<br/>/mcp — 25 tools]
         ADM[/admin/*]
-        AUD[(Audit SQLite<br/>/tmp/audit.db)]
+        AUD[(Audit<br/>Azure Table Storage)]
     end
 
     KV[(Key Vault<br/>cms-mcp-kv-prod<br/>db-user, db-password, allowlist)]
@@ -98,7 +98,7 @@ src/admcms_mcp/
 ├── query_helpers.py admcms_date, build_filter_where, paging, shift_year, sanitize_like, format_response
 ├── schema.py        SCHEMA_KNOWLEDGE (MCP-resource admcms://schema-knowledge)
 ├── audit.py         audit_call() contextmanager, ContextVars (current_user, actieve entry), record_sql
-├── audit_stores.py  LocalSQLiteStore (prod, /tmp), NullStore, AzureTableStore (stub)
+├── audit_stores.py  AzureTableStore (prod), LocalSQLiteStore (lokaal), NullStore
 ├── admin.py         /admin/tools, /admin/audit[/{id}], /admin/stats, /admin/health
 ├── branding.py      Icon-serving (/icon.png + aliases) en serverInfo.icons
 └── assets/          icon.png
@@ -289,7 +289,9 @@ Een *nieuwe* group of tenant vereist wél een KV-update (+ restart om de cache t
 **Vereisten aan de Entra-app** zodat dit werkt:
 
 - Multi-tenant (`AzureADMultipleOrgs`), exposed API scope `admcms.read`, app-role `admcms.invoke` (voor service principals).
-- **`groups`-claim** in het access token (groupMembershipClaims = SecurityGroup) — anders is `claims["groups"]` leeg en valt alles terug op `users`. Let op de Entra-limiet van 200 groepen per token (overage → geen `groups`-claim; dan werkt alleen `users`).
+- **`groups`-claim** in het access token. Stond tot 2026-08-19 op `null`, waardoor `claims["groups"]` altijd leeg was en de hele groepstak dood was: elke gebruiker moest als los OID in de allowlist. Nu `groupMembershipClaims = ApplicationGroup`.
+  Bewust **niet** `SecurityGroup`: die zet alle groepen van de gebruiker in het token en kapt boven de Entra-limiet af tot een verwijzing (`_claim_names`), waarna groepstoegang stil niet meer werkt. `ApplicationGroup` stuurt alleen groepen mee die aan de enterprise app zijn toegewezen — geen overage, en de klant kan in zijn eigen tenant zelf groepen toewijzen. Zie [`scripts/enable-group-claims.ps1`](../scripts/enable-group-claims.ps1).
+  Let op: een groep werkt pas na toewijzing aan de enterprise app **in de betreffende tenant**, en gebruikers moeten één keer opnieuw inloggen voor een token met de claim.
 - Klant-tenant heeft **admin-consent** gegeven (`/adminconsent?client_id=…`), waarna de enterprise app in hun tenant staat.
 
 ### 5.3 Wie de gebruiker is downstream
@@ -392,8 +394,8 @@ mislukte refresh wordt niet "vers" geserveerd — nightly restart maakte `now-0.
 
 - `audit_call(tool_name, args)` (contextmanager) maakt een `AuditEntry` met `id`, `timestamp`, `tool_name`, `args` (gevoelige keys `password/api_key/token/secret` → `***`), `sql_queries[]` (sql, params, duration_ms, row_count), `duration_ms`, `row_count`, `user` (uit `current_user`), `error`, `result_summary`.
 - Schrijven naar de store faalt nooit de tool-call (exception → log).
-- Stores via env `AUDIT_STORE`: `local` (SQLite, `AUDIT_DB_PATH`, prod = `/tmp/audit.db`), `none` (NullStore), `azure_table` (**stub**, gooit NotImplementedError).
-- **Let op**: `/tmp/audit.db` in de container is **ephemeraal** — verdwijnt bij elke revision-restart (nightly). Voor duurzame compliance-audit moet de AzureTableStore (of App Insights-export) af.
+- Stores via env `AUDIT_STORE`: `azure_table` (**prod**, Azure Table Storage via de managed identity; `AUDIT_TABLE_ACCOUNT_URL`, `AUDIT_TABLE_NAME`), `local` (SQLite, `AUDIT_DB_PATH` — lokale ontwikkeling), `none` (NullStore, tests).
+- **AzureTableStore-indeling**: PartitionKey = UTC-datum (tijdvraag raakt enkele partities i.p.v. de hele tabel), RowKey = geïnverteerde tick-count + entry-id (Table Storage sorteert alleen oplopend, dus inverteren maakt "nieuwste eerst" de natuurlijke leesorde). `has_error` is een opgeslagen boolean omdat filteren op `error != ''` in Table Storage onbetrouwbaar is. JSON-velden worden op 30k tekens afgekapt met een marker: één property mag max 64 KiB zijn, en een entry verliezen is erger dan een afgekapte SQL-string.
 
 **Admin** ([`admin.py`](../src/admcms_mcp/admin.py)) — allemaal achter dezelfde JWT-middleware; geen aparte admin-rol (iedereen op de allowlist kan ze lezen).
 
@@ -424,7 +426,9 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `AUTH_DISABLED` | – | `false` | **Alleen lokaal.** Bypasst alle auth |
 | `ALLOW_UNAUTHENTICATED_MCP_GET` | – | `false` | Noodklep Copilot Studio preview |
 | `ADMCMS_SERVER` / `ADMCMS_DATABASE` / `ADMCMS_DRIVER` | – | `cmsnl.database.windows.net` / `ADMCMS-PRODUCTION-REPL01` / ODBC 18 | DB-verbinding (niet-geheim deel) |
-| `AUDIT_STORE` / `AUDIT_DB_PATH` | – | `local` / `/tmp/audit.db` | Audit-store |
+| `AUDIT_STORE` | – | `azure_table` (prod) | Audit-store: `azure_table` / `local` / `none` |
+| `AUDIT_TABLE_ACCOUNT_URL` / `AUDIT_TABLE_NAME` | – | `https://<account>.table.core.windows.net` / `admcmsaudit` | Doel voor `azure_table` |
+| `AUDIT_DB_PATH` | – | `data/audit.db` | Alleen bij `AUDIT_STORE=local` |
 | `MAX_ROWS_HARD_LIMIT` | – | `5000` | Harde row-cap |
 | `AZURE_CLIENT_ID` | – | client-id van MI `CMS-MCP-id-prod` | DefaultAzureCredential kiest de user-assigned MI |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | – | uit Bicep | Telemetrie |
@@ -450,7 +454,7 @@ flowchart LR
 - **Runtime**: `python:3.12-slim-bookworm` + msodbcsql18, non-root `appuser` (uid 10001), `uvicorn --proxy-headers --forwarded-allow-ips='*'` op poort 8000. Container Apps: 0.5 vCPU / 1 Gi, min 1 / max 3 replicas, http-scaling.
 - **Auth naar Azure vanuit CI**: federated OIDC (`AZURE_CLIENT_ID`/`AZURE_TENANT_ID` secrets, geen wachtwoorden).
 - **Rollback**: verkeer blijft op laatste gezonde revision; `az containerapp ingress traffic set …`.
-- **Nightly restart** leegt: query-cache, filter-options-cache, allowlist-cache, JWKS-cache én de SQLite-audit in `/tmp`.
+- **Nightly restart** leegt de in-memory caches: query-cache, filter-options-cache, allowlist-cache, JWKS-cache. De audit-trail staat sinds 2026-08-19 in Table Storage en overleeft de restart.
 - **Dependabot** wekelijks (pip, docker, github-actions); dependency-ranges hebben bovengrenzen per major (mcp 2.0 verwijderde `mcp.server.fastmcp`).
 - Volledige ops-handleiding: [`docs/DEPLOYMENT.md`](DEPLOYMENT.md); testen: [`docs/TESTING.md`](TESTING.md).
 
@@ -461,9 +465,9 @@ flowchart LR
 | # | Wat | Waar | Status |
 |---|---|---|---|
 | 1 | README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`, werkelijk **25** `@mcp.tool()` (incl. `describe_server`, `health_check`, `get_filter_options`, `get_dead_stock`, `get_country_segment_matrix`). | `README.md`, `server.py` | README in deze commit bijgewerkt; `tool_count` zou dynamisch (`len(await mcp.list_tools())`) moeten worden. |
-| 2 | Audit-store SQLite in `/tmp` is ephemeraal (nightly restart) → geen duurzame audit-trail. `AzureTableStore` is een stub. | `audit_stores.py`, `infra/resources.bicep` | Open. Voor compliance-claim in ONBOARDING-CUSTOMER.md ("Campai kan deze loggen inzien") is een persistente store nodig. |
+| 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py` | **Opgelost 2026-08-19**: `AzureTableStore` geïmplementeerd, `AUDIT_STORE=azure_table` in prod. |
 | 3 | `/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker (ook CMS-eindgebruiker) kan de audit van anderen lezen (upn's + SQL). | `admin.py`, `server.py` | Open. Overweeg app-role `admcms.admin` of Campai-group-check. |
-| 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dode configuratie-pad in productie. | `config.py`, `auth.py` | Werkt (allowlist vangt het op); documenteren of verwijderen. |
+| 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
 | 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). |
 | 6 | Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING). | `docs/*.md` | Cosmetisch; bijwerken bij volgende doc-ronde. |
 | 7 | `groups`-claim: Entra stuurt bij >200 groepen géén `groups`-claim (overage). Zo'n gebruiker moet dan via `users` op de allowlist. | Entra-config | Aandachtspunt bij onboarding grote tenants. |

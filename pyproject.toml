@@ -20,6 +20,8 @@ dependencies = [
     "pydantic-settings>=2.2.0,<3",
     "azure-identity>=1.16.0,<2",
     "azure-keyvault-secrets>=4.8.0,<5",
+    # Audit store; the local SQLite file does not survive a restart.
+    "azure-data-tables>=12.5.0,<13",
     "httpx>=0.27.0,<1",
 ]
 

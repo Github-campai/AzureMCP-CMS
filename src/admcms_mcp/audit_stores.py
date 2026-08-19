@@ -181,17 +181,229 @@ class LocalSQLiteStore:
 
 
 class AzureTableStore:
-    """Stub — implement once the VM deployment uses a shared Azure Storage account.
+    """Production store: survives restarts and is shared across replicas.
 
-    The intent is to keep identical semantics to LocalSQLiteStore, so this
-    class will receive `log`, `query`, `get`, `stats` with the same signatures.
+    The SQLite store writes to container-local `/tmp`, so the trail was split
+    across up to three replicas and wiped by the nightly restart. An audit log
+    that disappears every night is not an audit log.
+
+    Layout:
+      PartitionKey  UTC date (YYYY-MM-DD). Bounds a time-range query to a few
+                    partitions instead of scanning the table.
+      RowKey        inverted tick count + entry id. Table Storage sorts only
+                    ascending by RowKey, so inverting makes "newest first" the
+                    natural read order rather than an in-memory sort.
+
+    Auth is DefaultAzureCredential: the container's managed identity in
+    production, the developer's `az login` locally. No key to rotate.
     """
 
-    def __init__(self, connection_string: str, table_name: str = "admcmsaudit"):
-        raise NotImplementedError(
-            "AzureTableStore is a stub. Implement with azure-data-tables "
-            "when migrating to shared Azure Storage."
+    #: One Table Storage property caps at 64 KiB and an entity at 1 MiB. Args and
+    #: SQL text can exceed that, so they are truncated with a marker rather than
+    #: failing the write and losing the entry altogether.
+    MAX_PROPERTY_CHARS = 30_000
+
+    #: Ceiling for a single query, mirroring LocalSQLiteStore.
+    MAX_QUERY_LIMIT = 1000
+
+    def __init__(
+        self,
+        table_name: str = "admcmsaudit",
+        account_url: str = "",
+        connection_string: str = "",
+        client: Any = None,
+    ):
+        self.table_name = table_name
+
+        if client is not None:  # injected by tests
+            self._client = client
+            return
+
+        from azure.data.tables import TableServiceClient
+
+        if connection_string:
+            service = TableServiceClient.from_connection_string(connection_string)
+        elif account_url:
+            from azure.identity import DefaultAzureCredential
+
+            service = TableServiceClient(endpoint=account_url, credential=DefaultAzureCredential())
+        else:
+            raise ValueError(
+                "AzureTableStore needs AUDIT_TABLE_ACCOUNT_URL "
+                "(https://<account>.table.core.windows.net) or a connection string"
+            )
+
+        # Idempotent, so a fresh environment needs no manual step.
+        try:
+            service.create_table_if_not_exists(table_name)
+        except Exception as exc:  # noqa: BLE001 - never block startup on this
+            logger.warning("Could not ensure audit table %s exists: %s", table_name, exc)
+
+        self._client = service.get_table_client(table_name)
+        logger.info("AzureTableStore ready on table %s", table_name)
+
+    def _cap(self, text: str) -> str:
+        if len(text) <= self.MAX_PROPERTY_CHARS:
+            return text
+        keep = self.MAX_PROPERTY_CHARS - 40
+        return text[:keep] + f"... [{len(text) - keep} tekens afgekapt]"
+
+    @staticmethod
+    def _partition(timestamp: str) -> str:
+        # Timestamps are ISO-8601; the date prefix is enough, no parsing needed.
+        return timestamp[:10] or "unknown"
+
+    @staticmethod
+    def _row_key(timestamp: str, entry_id: str) -> str:
+        """Inverted timestamp, so the newest row sorts first."""
+        try:
+            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            dt = datetime.now(UTC)
+        inverted = 9_999_999_999_999 - int(dt.timestamp() * 1000)
+        return f"{inverted:013d}-{entry_id}"
+
+    def log(self, entry: AuditEntry) -> None:
+        sql_dicts = [asdict(q) if isinstance(q, SqlCall) else q for q in entry.sql_queries]
+        self._client.upsert_entity(
+            {
+                "PartitionKey": self._partition(entry.timestamp),
+                "RowKey": self._row_key(entry.timestamp, entry.id),
+                "entry_id": entry.id,
+                "timestamp": entry.timestamp,
+                "tool_name": entry.tool_name,
+                "args_json": self._cap(json.dumps(entry.args, default=str)),
+                "sql_queries_json": self._cap(json.dumps(sql_dicts, default=str)),
+                "duration_ms": int(entry.duration_ms or 0),
+                "row_count": int(entry.row_count or 0),
+                "user_id": entry.user or "",
+                "error": self._cap(str(entry.error)) if entry.error else "",
+                # A boolean rather than filtering on "error != ''": Table Storage
+                # cannot filter inequality against an empty string reliably.
+                "has_error": bool(entry.error),
+                "result_summary_json": (
+                    self._cap(json.dumps(entry.result_summary, default=str))
+                    if entry.result_summary is not None
+                    else ""
+                ),
+            }
         )
+
+    def _filter(self, tool: str | None, since: datetime | None, errors_only: bool) -> str | None:
+        clauses: list[str] = []
+        if since:
+            clauses.append(f"PartitionKey ge '{_iso(since)[:10]}'")
+            clauses.append(f"timestamp ge '{_iso(since)}'")
+        if tool:
+            clauses.append("tool_name eq '{}'".format(tool.replace("'", "''")))
+        if errors_only:
+            clauses.append("has_error eq true")
+        return " and ".join(clauses) if clauses else None
+
+    def query(
+        self,
+        limit: int = 100,
+        tool: str | None = None,
+        since: datetime | None = None,
+        errors_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        capped = max(1, min(int(limit), self.MAX_QUERY_LIMIT))
+        rows = self._client.query_entities(
+            query_filter=self._filter(tool, since, errors_only),
+            select=[
+                "entry_id",
+                "timestamp",
+                "tool_name",
+                "duration_ms",
+                "row_count",
+                "user_id",
+                "error",
+            ],
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            out.append(
+                {
+                    "id": row.get("entry_id"),
+                    "timestamp": row.get("timestamp"),
+                    "tool_name": row.get("tool_name"),
+                    "duration_ms": row.get("duration_ms"),
+                    "row_count": row.get("row_count"),
+                    "user_id": row.get("user_id"),
+                    "error": row.get("error") or None,
+                }
+            )
+            if len(out) >= capped:
+                break
+        return out
+
+    def get(self, entry_id: str) -> dict[str, Any] | None:
+        safe = entry_id.replace("'", "''")
+        for row in self._client.query_entities(query_filter=f"entry_id eq '{safe}'"):
+            entry: dict[str, Any] = {
+                "id": row.get("entry_id"),
+                "timestamp": row.get("timestamp"),
+                "tool_name": row.get("tool_name"),
+                "duration_ms": row.get("duration_ms"),
+                "row_count": row.get("row_count"),
+                "user_id": row.get("user_id"),
+                "error": row.get("error") or None,
+            }
+            for prop, key in (
+                ("args_json", "args"),
+                ("sql_queries_json", "sql_queries"),
+                ("result_summary_json", "result_summary"),
+            ):
+                raw = row.get(prop)
+                try:
+                    entry[key] = json.loads(raw) if raw else None
+                except (TypeError, ValueError):
+                    # A truncated payload is no longer valid JSON; hand back the
+                    # text so the caller still sees what was captured.
+                    entry[key] = raw
+            return entry
+        return None
+
+    def stats(self, since: datetime | None = None) -> dict[str, Any]:
+        since = since or (datetime.now(UTC) - timedelta(days=7))
+        rows = self._client.query_entities(
+            query_filter=self._filter(None, since, False),
+            select=["tool_name", "duration_ms", "has_error"],
+        )
+
+        total = 0
+        errors = 0
+        per_tool: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            total += 1
+            failed = bool(row.get("has_error"))
+            errors += 1 if failed else 0
+            name = row.get("tool_name") or "unknown"
+            bucket = per_tool.setdefault(
+                name, {"tool_name": name, "calls": 0, "_ms": 0, "errors": 0}
+            )
+            bucket["calls"] += 1
+            bucket["_ms"] += int(row.get("duration_ms") or 0)
+            bucket["errors"] += 1 if failed else 0
+
+        rollup = [
+            {
+                "tool_name": b["tool_name"],
+                "calls": b["calls"],
+                "avg_duration_ms": (b["_ms"] / b["calls"]) if b["calls"] else 0,
+                "errors": b["errors"],
+            }
+            for b in per_tool.values()
+        ]
+        rollup.sort(key=lambda r: r["calls"], reverse=True)
+
+        return {
+            "since": _iso(since),
+            "total_calls": total,
+            "total_errors": errors,
+            "error_rate_pct": (errors / total * 100) if total else 0.0,
+            "per_tool": rollup,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +441,11 @@ def build_store_from_env() -> AuditStore:
     if mode == "none":
         return NullStore()
     if mode == "azure_table":
-        conn = os.environ.get("AUDIT_AZURE_CONNECTION_STRING", "")
-        return AzureTableStore(conn)
+        return AzureTableStore(
+            table_name=os.environ.get("AUDIT_TABLE_NAME", "admcmsaudit"),
+            account_url=os.environ.get("AUDIT_TABLE_ACCOUNT_URL", ""),
+            connection_string=os.environ.get("AUDIT_AZURE_CONNECTION_STRING", ""),
+        )
     raise ValueError(f"Unknown AUDIT_STORE={mode!r}")
 
 
