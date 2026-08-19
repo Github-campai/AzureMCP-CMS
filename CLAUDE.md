@@ -8,6 +8,8 @@ Volledige beschrijving: **[`docs/ARCHITECTUUR.md`](docs/ARCHITECTUUR.md)** — l
 
 ## Levende documentatie — verplicht bijwerken
 
+Wat er recent is gewijzigd staat in [`CHANGELOG.md`](CHANGELOG.md).
+
 `docs/ARCHITECTUUR.md` is de bron van waarheid over auth, autorisatie (tenants/groepen/allowlist),
 endpoints, tools, data-laag, audit, config en deploy. **Elke commit die iets daaraan verandert,
 werkt dat document in dezelfde commit bij** (zie §12 daar voor de mapping wijziging → sectie).

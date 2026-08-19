@@ -47,6 +47,7 @@ Lid maken (CMS-zijde): CMS IT-admin in hun eigen Entra portal — zie [`docs/ONB
 - **CMS eindgebruiker — alle clients (Claude, Cursor, VS Code, Copilot Studio)?** → [`docs/CLIENT-SETUP.md`](docs/CLIENT-SETUP.md)
 - **Campai ops — hoe deploy/restart/log ik?** → [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - **Hoe werkt de code (flows, auth, groepen, tools)?** → [`docs/ARCHITECTUUR.md`](docs/ARCHITECTUUR.md) (levende documentatie)
+- **Wat is er recent gewijzigd?** → [`CHANGELOG.md`](CHANGELOG.md)
 - **Iemand nieuwe op een MCP-project — hoe is dit gebouwd?** → [`docs/superpowers/specs/2026-05-12-azuremcp-cms-design.md`](docs/superpowers/specs/2026-05-12-azuremcp-cms-design.md)
 
 ## Wat doet dit?
