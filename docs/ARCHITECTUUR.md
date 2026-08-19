@@ -5,7 +5,7 @@
 > auth, autorisatie, endpoints, tools, data-laag, config of deploy (zie [`CLAUDE.md`](../CLAUDE.md)).
 > Verifieer bij twijfel altijd tegen de code; de bestandsverwijzingen hieronder zijn daarvoor.
 >
-> Laatst geverifieerd tegen commit `6e10ee6` (main) — 2026-08-19.
+> Laatst geverifieerd tegen commit `HEAD` (main) — 2026-08-19.
 
 ---
 
@@ -294,6 +294,35 @@ Een *nieuwe* group of tenant vereist wél een KV-update (+ restart om de cache t
   Let op: een groep werkt pas na toewijzing aan de enterprise app **in de betreffende tenant**, en gebruikers moeten één keer opnieuw inloggen voor een token met de claim.
 - Klant-tenant heeft **admin-consent** gegeven (`/adminconsent?client_id=…`), waarna de enterprise app in hun tenant staat.
 
+### 5.2b Admin-autorisatie (`/admin/*`)
+
+Data-toegang is niet genoeg voor `/admin/tools`, `/admin/audit[/{id}]`, `/admin/stats`
+en `/admin/health`. Die endpoints tonen de audit-trail van **iedere** gebruiker — upn's
+en de SQL die hun vragen opleverden — dus een CMS-eindgebruiker zou anders kunnen zien
+wat Campai heeft opgevraagd.
+
+`check_admin_access()` ([`auth.py`](../src/admcms_mcp/auth.py)) draait in de middleware
+ná `check_access`, alleen voor paden onder `/admin`. Configuratie zit in dezelfde
+Key Vault-allowlist:
+
+```json
+{"users": [...], "groups": [...],
+ "admins": {"users": ["<oid>"], "groups": ["<group-id>"]}}
+```
+
+Nu ingesteld op groep `SG-Campai-ADMCMS-Users` (`bd6ce8cc-…`), dus Campai-medewerkers.
+Twee eigenschappen die bewust zo zijn:
+
+- **Faalt dicht.** Geen of een lege `admins`-sectie betekent dat niemand erin komt. Een
+  onbereikbare admin-UI is te herstellen; stil iedereen toegang geven tot de audit van
+  anderen niet.
+- **Geen omweg.** `check_access` draait eerst, dus admin-rechten zonder data-toegang
+  geven nog steeds 403 ("User not on allowlist").
+
+Wil je admin en data-toegang scheiden — bijvoorbeeld een Campai-collega die wel data
+mag zien maar niet de audit van anderen — maak dan een aparte groep, wijs die toe aan
+de enterprise app (nodig voor de `ApplicationGroup`-claim) en zet die in `admins.groups`.
+
 ### 5.3 Wie de gebruiker is downstream
 
 `EntraAuthMiddleware` zet `request.state.user_claims` en de ContextVar `current_user`
@@ -466,7 +495,7 @@ flowchart LR
 |---|---|---|---|
 | 1 | README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`, werkelijk **25** `@mcp.tool()` (incl. `describe_server`, `health_check`, `get_filter_options`, `get_dead_stock`, `get_country_segment_matrix`). | `README.md`, `server.py` | README in deze commit bijgewerkt; `tool_count` zou dynamisch (`len(await mcp.list_tools())`) moeten worden. |
 | 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py` | **Opgelost 2026-08-19**: `AzureTableStore` geïmplementeerd, `AUDIT_STORE=azure_table` in prod. |
-| 3 | `/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker (ook CMS-eindgebruiker) kan de audit van anderen lezen (upn's + SQL). | `admin.py`, `server.py` | Open. Overweeg app-role `admcms.admin` of Campai-group-check. |
+| 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
 | 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
 | 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). |
 | 6 | Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING). | `docs/*.md` | Cosmetisch; bijwerken bij volgende doc-ronde. |

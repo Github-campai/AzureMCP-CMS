@@ -20,7 +20,7 @@ Niet vergeten:
 
 ## Werkwijze
 
-- Tests: `pytest -q` (339 tests) en `ruff check . && ruff format --check .` moeten groen zijn vóór commit; CI blokkeert deploy anders.
+- Tests: `pytest -q` (351 tests) en `ruff check . && ruff format --check .` moeten groen zijn vóór commit; CI blokkeert deploy anders.
 - Nieuwe tool: pure functie in `src/admcms_mcp/tools.py` (parametriseer via `execute_query_params`, `format_response`), registreren in `server.py` via `@mcp.tool()` + `_audited(...)`, tests in `tests/test_tools.py`.
 - Nooit `AUTH_DISABLED=true` in productie-config; nooit secrets in code/env-yaml — alles via Key Vault (`keyvault.get_secret`).
 - Push naar `main` deployt automatisch (paden `src/**`, `Dockerfile`, `pyproject.toml`, `uv.lock`); documentatie-commits deployen niet.

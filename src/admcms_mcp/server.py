@@ -26,7 +26,13 @@ from starlette.routing import Mount, Route
 
 from admcms_mcp.admin import build_admin_routes
 from admcms_mcp.audit import audit_call, current_user
-from admcms_mcp.auth import Forbidden, InvalidToken, check_access, validate_jwt
+from admcms_mcp.auth import (
+    Forbidden,
+    InvalidToken,
+    check_access,
+    check_admin_access,
+    validate_jwt,
+)
 from admcms_mcp.branding import (
     ICON_ALIAS_ROUTES,
     ICON_ROUTE,
@@ -139,6 +145,17 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
                     {"error": "forbidden", "detail": _sanitize(str(e))},
                     status_code=403,
                 )
+
+            # /admin/* exposes every user's audit trail, including their UPN and
+            # the SQL their questions produced. Data access is not enough.
+            if path.startswith("/admin"):
+                try:
+                    check_admin_access(claims)
+                except Forbidden as e:
+                    return JSONResponse(
+                        {"error": "forbidden", "detail": _sanitize(str(e))},
+                        status_code=403,
+                    )
 
             request.state.user_claims = claims
             current_user.set(claims.get("upn") or claims.get("oid") or "authenticated")

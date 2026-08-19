@@ -169,3 +169,53 @@ def check_access(claims: dict[str, Any]) -> None:
 
     logger.info("Access denied: upn=%s oid=%s tid=%s", upn, oid, claims.get("tid"))
     raise Forbidden("User not on allowlist")
+
+
+def check_admin_access(claims: dict[str, Any]) -> None:
+    """Raise Forbidden unless the caller may read /admin/*.
+
+    Being on the allowlist is not enough. The admin endpoints expose the audit
+    trail of *every* user -- their UPN and the SQL their questions produced -- so
+    a customer end-user with data access would otherwise be able to read what
+    Campai has been querying.
+
+    Configured under an `admins` key in the same Key Vault allowlist:
+
+        {"users": [...], "groups": [...],
+         "admins": {"users": [<oid>], "groups": [<group-id>]}}
+
+    Fails closed: no `admins` configuration means nobody gets in. An empty
+    section locking out the admin UI is recoverable; silently granting every
+    authorised user access to everyone else's audit trail is not.
+    """
+    oid = claims.get("oid", "")
+    groups = claims.get("groups") or []
+    upn = claims.get("upn", "")
+
+    try:
+        allowlist = _load_allowlist()
+    except Exception as e:
+        logger.exception("Failed to load allowlist from Key Vault")
+        raise Forbidden(f"Allowlist unavailable: {e}") from e
+
+    admins = allowlist.get("admins") or {}
+    admin_users = admins.get("users") or []
+    admin_groups = admins.get("groups") or []
+
+    if not admin_users and not admin_groups:
+        logger.warning(
+            "No 'admins' section in the allowlist; denying /admin to everyone. upn=%s",
+            upn,
+        )
+        raise Forbidden("No administrators are configured")
+
+    if oid in admin_users:
+        logger.info("Admin access granted via user: upn=%s oid=%s", upn, oid)
+        return
+
+    if set(groups) & set(admin_groups):
+        logger.info("Admin access granted via group: upn=%s oid=%s", upn, oid)
+        return
+
+    logger.info("Admin access denied: upn=%s oid=%s", upn, oid)
+    raise Forbidden("Not an administrator")
