@@ -6,6 +6,10 @@
 > Verifieer bij twijfel altijd tegen de code; de bestandsverwijzingen hieronder zijn daarvoor.
 >
 > Laatst geverifieerd tegen commit `HEAD` (main) — 2026-08-19.
+>
+> De app antwoordt op twee hostnames: `admcms.campai.nl` (Campai) en
+> `mcp-cms-adm.cmsnl.com` (klantnaam). Beide hebben een managed certificate en
+> beschrijven zichzelf in de OAuth-metadata.
 
 ---
 
@@ -452,6 +456,7 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `CAMPAI_ALLOWED_GROUP` | – | leeg (niet gezet in prod) | Optionele group-shortcut |
 | `ENTRA_AUTHORITY` | – | `organizations` | Authority voor OAuth-proxy |
 | `PUBLIC_BASE_URL` | – | `https://<container-app-fqdn>` (gezet door deploy-workflow / repo-var) | Extern zichtbare URL in metadata/icons |
+| `PUBLIC_BASE_URL_ALIASES` | – | `https://mcp-cms-adm.cmsnl.com` | Extra hostnames; elke bekende host beschrijft zichzelf in de OAuth-metadata, onbekende hosts vallen terug op `PUBLIC_BASE_URL` |
 | `AUTH_DISABLED` | – | `false` | **Alleen lokaal.** Bypasst alle auth |
 | `ALLOW_UNAUTHENTICATED_MCP_GET` | – | `false` | Noodklep Copilot Studio preview |
 | `ADMCMS_SERVER` / `ADMCMS_DATABASE` / `ADMCMS_DRIVER` | – | `cmsnl.database.windows.net` / `ADMCMS-PRODUCTION-REPL01` / ODBC 18 | DB-verbinding (niet-geheim deel) |

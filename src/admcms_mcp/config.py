@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # domain instead of the Container Apps hostname.
     public_base_url: str = ""
 
+    # Extra hostnames waarop de app antwoordt, komma-gescheiden. Elke bekende
+    # hostname beschrijft zichzelf in de OAuth-metadata; onbekende hosts vallen
+    # terug op public_base_url zodat een gespoofte Host-header geen vreemd
+    # domein kan laten adverteren.
+    public_base_url_aliases: list[str] = []
+
     # Database connection (non-secret parts; password comes from Key Vault)
     admcms_server: str = "cmsnl.database.windows.net"
     admcms_database: str = "ADMCMS-PRODUCTION-REPL01"
@@ -81,6 +87,14 @@ class Settings(BaseSettings):
             dotenv_settings,
             file_secret_settings,
         )
+
+    @field_validator("public_base_url_aliases", mode="before")
+    @classmethod
+    def split_aliases(cls, v):
+        """Split comma-separated string into a list of base URLs."""
+        if isinstance(v, str):
+            return [a.strip() for a in v.split(",") if a.strip()]
+        return v
 
     @field_validator("entra_allowed_tenants", mode="before")
     @classmethod

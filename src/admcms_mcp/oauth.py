@@ -68,25 +68,47 @@ def resource_uri(app_id: str) -> str:
     return app_id if app_id.startswith("api://") else f"api://{app_id}"
 
 
-def public_base_url(request: Request) -> str:
-    """Externally-visible base URL, without trailing slash.
+def _request_host(request: Request) -> str:
+    forwarded_host = request.headers.get("x-forwarded-host", "")
+    return (forwarded_host.split(",")[0].strip() or request.url.netloc).lower()
 
-    Precedence: the `PUBLIC_BASE_URL` setting (needed once a custom domain
-    fronts the app), then `X-Forwarded-*`, then the request URL. Azure
-    Container Apps terminates TLS at the ingress, so uvicorn sees plain HTTP —
-    advertising that scheme makes OAuth clients reject the metadata.
+
+def _host_of(url: str) -> str:
+    return url.strip().rstrip("/").split("//")[-1].split("/")[0].lower()
+
+
+def public_base_url(request: Request) -> str:
+    """Externally-visible base URL for *this* request, without trailing slash.
+
+    The app answers on more than one hostname: `admcms.campai.nl` and the
+    customer's own `mcp-cms-adm.cmsnl.com`. Each has to describe itself, or a
+    client that dialled one is handed metadata naming the other -- confusing at
+    best, and rejected by clients that check the RFC 9728 `resource` against the
+    URL they connected to.
+
+    So if the incoming host is one we recognise (`PUBLIC_BASE_URL` or an entry in
+    `PUBLIC_BASE_URL_ALIASES`), that host is echoed back. Anything else falls
+    back to the canonical URL, so a spoofed Host header cannot make the server
+    advertise someone else's domain.
+
+    With nothing configured this derives from `X-Forwarded-*`: Container Apps
+    terminates TLS at the ingress, so uvicorn sees plain HTTP and advertising
+    that scheme would make clients reject the metadata.
     """
     try:
-        configured = get_settings().public_base_url.strip().rstrip("/")
+        settings = get_settings()
+        canonical = settings.public_base_url.strip().rstrip("/")
+        aliases = [a.strip().rstrip("/") for a in settings.public_base_url_aliases if a.strip()]
     except Exception:  # settings incomplete (tests / early boot)
-        configured = ""
-    if configured:
-        return configured
+        canonical, aliases = "", []
+
+    if canonical:
+        known = {_host_of(url): url for url in [canonical, *aliases]}
+        return known.get(_request_host(request), canonical)
 
     forwarded_proto = request.headers.get("x-forwarded-proto", "")
     scheme = forwarded_proto.split(",")[0].strip() or request.url.scheme
-    forwarded_host = request.headers.get("x-forwarded-host", "")
-    host = forwarded_host.split(",")[0].strip() or request.url.netloc
+    host = _request_host(request)
     # Builds a URL, not an HTML response; there is no Flask view here.
     # nosemgrep: python.flask.security.audit.directly-returned-format-string.directly-returned-format-string
     return f"{scheme}://{host}"

@@ -346,3 +346,87 @@ async def test_unauthenticated_get_on_mcp_can_be_re_enabled(monkeypatch):
         }
     )
     assert await middleware.dispatch(request, call_next) is passed_through
+
+
+# ---------------------------------------------------------------------------
+# Multiple hostnames. The app answers on admcms.campai.nl and on the customer's
+# own mcp-cms-adm.cmsnl.com; each must describe itself.
+# ---------------------------------------------------------------------------
+
+CANONIEK = "https://admcms.campai.nl"
+KLANT = "https://mcp-cms-adm.cmsnl.com"
+
+
+@pytest.fixture
+def twee_hostnames(monkeypatch):
+    monkeypatch.setenv("PUBLIC_BASE_URL", CANONIEK)
+    monkeypatch.setenv("PUBLIC_BASE_URL_ALIASES", KLANT)
+    from admcms_mcp.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+async def test_each_known_hostname_describes_itself(app_client, twee_hostnames):
+    """A client that dialled the customer name must not be handed Campai's."""
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/.well-known/oauth-protected-resource/mcp",
+            headers={"x-forwarded-host": "mcp-cms-adm.cmsnl.com", "x-forwarded-proto": "https"},
+        )
+    body = response.json()
+    assert body["resource"] == f"{KLANT}/mcp"
+    assert body["authorization_servers"] == [KLANT]
+
+
+async def test_the_canonical_hostname_still_describes_itself(app_client, twee_hostnames):
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/.well-known/oauth-protected-resource/mcp",
+            headers={"x-forwarded-host": "admcms.campai.nl", "x-forwarded-proto": "https"},
+        )
+    assert response.json()["resource"] == f"{CANONIEK}/mcp"
+
+
+async def test_an_unknown_host_falls_back_to_the_canonical_url(app_client, twee_hostnames):
+    """A spoofed Host header must not make the server advertise someone else's domain."""
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/.well-known/oauth-protected-resource/mcp",
+            headers={"x-forwarded-host": "aanvaller.example.com", "x-forwarded-proto": "https"},
+        )
+    body = response.json()
+    assert body["resource"] == f"{CANONIEK}/mcp"
+    assert "aanvaller" not in response.text
+
+
+async def test_the_challenge_follows_the_hostname_too(app_client, twee_hostnames):
+    async with app_client(build_app()) as client:
+        response = await client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+            headers={"x-forwarded-host": "mcp-cms-adm.cmsnl.com", "x-forwarded-proto": "https"},
+        )
+    assert response.status_code == 401
+    assert f'resource_metadata="{KLANT}/' in response.headers["www-authenticate"]
+
+
+async def test_authorization_server_metadata_follows_the_hostname(app_client, twee_hostnames):
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/.well-known/oauth-authorization-server",
+            headers={"x-forwarded-host": "mcp-cms-adm.cmsnl.com", "x-forwarded-proto": "https"},
+        )
+    body = response.json()
+    assert body["issuer"] == KLANT
+    assert body["registration_endpoint"] == f"{KLANT}/register"
+
+
+async def test_host_matching_ignores_case(app_client, twee_hostnames):
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/.well-known/oauth-protected-resource/mcp",
+            headers={"x-forwarded-host": "MCP-CMS-ADM.CMSNL.COM", "x-forwarded-proto": "https"},
+        )
+    assert response.json()["resource"] == f"{KLANT}/mcp"
