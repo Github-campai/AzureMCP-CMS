@@ -29,6 +29,18 @@ param cpu string = '0.5'
 @description('Container Apps memory')
 param memory string = '1Gi'
 
+@description('Storage account holding the audit table. Defaults to the account that is already live in CMS-MCP-rg-prod; a name is passed explicitly rather than derived so a redeploy binds to the existing account instead of creating a second one.')
+param auditStorageAccountName string = 'cmsmcpauditprod39b6'
+
+@description('Table holding the audit entries. Must match AUDIT_TABLE_NAME.')
+param auditTableName string = 'admcmsaudit'
+
+@description('Assign Storage Table Data Contributor to the managed identity. The assignment already exists in prod (created by hand); set to false if a deploy trips over RoleAssignmentExists.')
+param assignAuditTableRole bool = true
+
+@description('How long audit rows are kept, in days. See docs/ARCHITECTUUR.md 8 for the reasoning behind the number.')
+param auditRetentionDays int = 365
+
 @description('Min replicas (0 = scale to zero)')
 param minReplicas int = 1
 
@@ -56,6 +68,7 @@ var contributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
 var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+var storageTableDataContributorRoleId = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
 var acrPushRoleId = '8311e382-0749-4cb8-b61a-304f252e45ec'
 
 // ─────────────────────────────────────────────────────────────────────
@@ -134,6 +147,60 @@ resource kvIdentitySecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-
   properties: {
     principalId: managedIdentity.properties.principalId
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 3b. Audit storage (Table Storage)
+// ─────────────────────────────────────────────────────────────────────
+// The container filesystem is ephemeral and there are up to three replicas, so
+// the SQLite store meant the trail was split per replica and wiped by every
+// restart. Table Storage is shared, survives restarts and needs no key: the
+// managed identity authenticates with DefaultAzureCredential.
+//
+// These resources already exist in CMS-MCP-rg-prod; they were created by hand
+// and never written down. Declaring them here is what stops the next `az
+// deployment group create` from resetting the app back to AUDIT_STORE=local.
+resource auditStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: auditStorageAccountName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+    allowBlobPublicAccess: false
+    // Identity-based access only; there is no key to leak or rotate.
+    allowSharedKeyAccess: false
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: 'Allow'
+    }
+  }
+}
+
+resource auditTableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
+  parent: auditStorage
+  name: 'default'
+}
+
+resource auditTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: auditTableService
+  name: auditTableName
+}
+
+// Managed Identity may read and write audit rows. Table Data Contributor is the
+// narrowest built-in role that allows both; the app never touches blobs.
+resource auditTableRoleForIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignAuditTableRole) {
+  name: guid(auditStorage.id, managedIdentity.id, 'storage-table-data-contributor')
+  scope: auditStorage
+  properties: {
+    principalId: managedIdentity.properties.principalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageTableDataContributorRoleId)
     principalType: 'ServicePrincipal'
   }
 }
@@ -277,11 +344,19 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'AUDIT_STORE'
-              value: 'local'
+              value: 'azure_table'
             }
             {
-              name: 'AUDIT_DB_PATH'
-              value: '/tmp/audit.db'
+              name: 'AUDIT_TABLE_ACCOUNT_URL'
+              value: 'https://${auditStorage.name}.table.${environment().suffixes.storage}'
+            }
+            {
+              name: 'AUDIT_TABLE_NAME'
+              value: auditTableName
+            }
+            {
+              name: 'AUDIT_RETENTION_DAYS'
+              value: string(auditRetentionDays)
             }
             {
               name: 'AZURE_CLIENT_ID'

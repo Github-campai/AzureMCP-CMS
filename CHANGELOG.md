@@ -8,6 +8,58 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — Hardening ronde 2: de audit-trail vastgelegd in infra
+
+### De bicep wist niet wat er in Azure draait
+
+`infra/resources.bicep` zette `AUDIT_STORE=local` met `AUDIT_DB_PATH=/tmp/audit.db`,
+terwijl de container app in productie allang op `azure_table` staat — met een
+storage account (`cmsmcpauditprod39b6`), een table (`admcmsaudit`) en een
+*Storage Table Data Contributor*-toewijzing voor de managed identity, allemaal
+met de hand aangemaakt en nergens vastgelegd.
+
+Er was dus niets kapot, maar de eerstvolgende `az deployment group create` had
+prod teruggezet naar een SQLite-bestand in `/tmp`: per replica een eigen trail,
+en elke restart weg. Alles staat nu in de bicep, inclusief acht tests die
+precies op die drift falen.
+
+Twee bewuste keuzes daarbij:
+
+- De accountnaam is een **parameter** met de live waarde als default, geen
+  afleiding van `resourceToken`. Het account bestond al; een afgeleide naam zou
+  een tweede account aanmaken naast het bestaande.
+- `allowSharedKeyAccess: false`. De app authenticeert met zijn managed identity
+  en niets in dit repo gebruikt een sleutel of connection string voor dit
+  account (nagekeken). Dit is de enige regel die een live resource wijzigt.
+
+### Bewaartermijn is nu een keuze in plaats van "voor altijd"
+
+Een audit-rij bevat de UPN van degene die de query draaide. Die onbeperkt
+bewaren mag niet zonder doel om naar te wijzen. Termijn: **365 dagen**
+(`AUDIT_RETENTION_DAYS`, `0` = uit). Een jaar dekt de rapportagecyclus waar deze
+cijfers bij horen; korter en de trail kan niets meer zeggen over het vorige
+kwartaal. De onderbouwing staat in `docs/ARCHITECTUUR.md` §8.
+
+Opruimen doet de app zelf: `_audit_retention_loop()` draait bij het starten en
+daarna elke 24 uur, in een worker-thread. Geen extra job en geen extra rechten —
+de container heeft de identity al. In Table Storage snijdt de purge op
+`PartitionKey` (de UTC-datum), dus er worden geen rijen gelezen om te bepalen
+wat weg moet.
+
+### Nachtelijke restart: oorzaak gevonden
+
+Stond in de vorige changelog als "oorzaak nooit onderzocht". De container wordt
+**overdag** al herstart door Azure zelf: `/healthz` antwoordt niet meer terwijl
+een trage query de event loop blokkeert, waarna de liveness-probe hem neerhaalt
+(`ReplicaUnhealthy` → *failed liveness probe*, 13× op 27-08 volgens
+`ContainerAppSystemLogs`). De nachtelijke restart lost dat niet op. Advies:
+laten staan tot de event-loop-blokkade en de cache-eviction zijn opgelost, dan
+verwijderen. Voor de audit is hij niet langer schadelijk.
+
+Tests: 22 nieuwe (`tests/test_audit_retention.py`, `tests/test_infra_audit_config.py`).
+
+---
+
 ## 2026-08-27 — Hardening ronde 1: OAuth-proxy en foutmaskering
 
 ### De OAuth-proxy brokerde meer dan we adverteren

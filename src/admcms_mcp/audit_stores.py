@@ -4,9 +4,13 @@ LocalSQLiteStore — stdlib-only, file-based, perfect for local dev and
 single-instance VM deployments. Path defaults to `data/audit.db` but is
 configurable via the AUDIT_DB_PATH env var.
 
-AzureTableStore — stub for now. Once the VM deployment pattern is agreed,
-implement with `azure-data-tables` SDK. Switching store is one env-var
-change; all calling code uses the Store protocol.
+AzureTableStore — the production store, on Azure Table Storage via the
+container's managed identity. Shared across replicas and unaffected by
+restarts, which the container-local SQLite file was not. Switching store is one
+env-var change; all calling code uses the Store protocol.
+
+Every store can purge entries past a retention age; `audit.purge_expired()`
+drives that from AUDIT_RETENTION_DAYS.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ class AuditStore(Protocol):
     ) -> list[dict[str, Any]]: ...
     def get(self, entry_id: str) -> dict[str, Any] | None: ...
     def stats(self, since: datetime | None = None) -> dict[str, Any]: ...
+    def purge_older_than(self, days: int) -> int: ...
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +179,20 @@ class LocalSQLiteStore:
             "per_tool": [dict(r) for r in per_tool],
         }
 
+    def purge_older_than(self, days: int) -> int:
+        """Delete entries older than `days`. Returns how many went. 0 disables."""
+        if days <= 0:
+            return 0
+        cutoff = _iso(datetime.now(UTC) - timedelta(days=days))
+        with self._lock, self._conn() as conn:
+            deleted = conn.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff,)).rowcount
+        if deleted:
+            logger.info("Purged %d audit entries older than %s", deleted, cutoff)
+        return deleted
+
 
 # ---------------------------------------------------------------------------
-# Azure Table Storage (stub)
+# Azure Table Storage
 # ---------------------------------------------------------------------------
 
 
@@ -405,6 +421,31 @@ class AzureTableStore:
             "per_tool": rollup,
         }
 
+    def purge_older_than(self, days: int) -> int:
+        """Delete entries older than `days`. Returns how many went. 0 disables.
+
+        PartitionKey is the UTC date, so the cutoff is a plain string compare on
+        the partition — no scan of the rows themselves. Deletes go one by one
+        rather than in a batch: batch operations must share a partition, and a
+        purge crosses every partition older than the cutoff.
+        """
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
+        deleted = 0
+        for row in self._client.query_entities(
+            query_filter=f"PartitionKey lt '{cutoff}'",
+            select=["PartitionKey", "RowKey"],
+        ):
+            try:
+                self._client.delete_entity(partition_key=row["PartitionKey"], row_key=row["RowKey"])
+                deleted += 1
+            except Exception as exc:  # noqa: BLE001 — one bad row must not stop the purge
+                logger.warning("Could not purge audit row %s: %s", row.get("RowKey"), exc)
+        if deleted:
+            logger.info("Purged %d audit entries from partitions before %s", deleted, cutoff)
+        return deleted
+
 
 # ---------------------------------------------------------------------------
 # Null store (for tests / audit-disabled mode)
@@ -431,6 +472,9 @@ class NullStore:
             "error_rate_pct": 0.0,
             "per_tool": [],
         }
+
+    def purge_older_than(self, days: int) -> int:
+        return 0
 
 
 def build_store_from_env() -> AuditStore:
