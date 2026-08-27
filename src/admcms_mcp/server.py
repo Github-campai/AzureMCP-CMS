@@ -1,8 +1,9 @@
 """HTTP server: Starlette app with MCP Streamable HTTP + Entra JWT auth."""
 
+import asyncio
 import html
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 # Load .env into os.environ so keyvault.py's env-var overrides (e.g.
 # ADMCMS_DB_USERNAME / ADMCMS_DB_PASSWORD) work without Key Vault in
@@ -25,7 +26,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from admcms_mcp.admin import build_admin_routes
-from admcms_mcp.audit import audit_call, current_user
+from admcms_mcp.audit import audit_call, current_user, purge_expired
 from admcms_mcp.auth import (
     Forbidden,
     InvalidToken,
@@ -1280,6 +1281,34 @@ def _build_mcp_server() -> FastMCP:
     return mcp
 
 
+#: Seconds between audit purges. Retention is measured in days, so once a day is
+#: often enough; the first pass runs at startup so a restart also cleans up.
+_AUDIT_PURGE_INTERVAL_SECONDS = 24 * 3600
+
+
+async def _audit_retention_loop() -> None:
+    """Delete audit rows past their retention age, once a day.
+
+    Runs in the app rather than as a scheduled job: the container already holds
+    the managed identity that may write the table, so nothing new has to be
+    granted anywhere. Every replica runs its own loop; deletes are idempotent,
+    so the duplicate work is wasted effort, not a correctness problem.
+
+    The store is synchronous, so the purge goes to a worker thread — this must
+    not be the thing that blocks the event loop.
+    """
+    while True:
+        try:
+            removed = await asyncio.to_thread(purge_expired)
+            if removed:
+                logger.info("Audit retention: removed %d expired entries", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Audit retention pass failed; will retry tomorrow")
+        await asyncio.sleep(_AUDIT_PURGE_INTERVAL_SECONDS)
+
+
 def build_app() -> Starlette:
     try:
         if get_settings().auth_disabled:
@@ -1301,7 +1330,13 @@ def build_app() -> Starlette:
         # manager task group) to the outer Starlette. Without this, the
         # mounted /mcp endpoint crashes with "Task group is not initialized".
         async with mcp_asgi_app.router.lifespan_context(mcp_asgi_app):
-            yield
+            housekeeping = asyncio.create_task(_audit_retention_loop())
+            try:
+                yield
+            finally:
+                housekeeping.cancel()
+                with suppress(asyncio.CancelledError):
+                    await housekeeping
 
     routes = [
         Route("/", index, methods=["GET"]),

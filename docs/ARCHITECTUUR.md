@@ -432,6 +432,10 @@ mislukte refresh wordt niet "vers" geserveerd — nightly restart maakte `now-0.
 - Stores via env `AUDIT_STORE`: `azure_table` (**prod**, Azure Table Storage via de managed identity; `AUDIT_TABLE_ACCOUNT_URL`, `AUDIT_TABLE_NAME`), `local` (SQLite, `AUDIT_DB_PATH` — lokale ontwikkeling), `none` (NullStore, tests).
 - **AzureTableStore-indeling**: PartitionKey = UTC-datum (tijdvraag raakt enkele partities i.p.v. de hele tabel), RowKey = geïnverteerde tick-count + entry-id (Table Storage sorteert alleen oplopend, dus inverteren maakt "nieuwste eerst" de natuurlijke leesorde). `has_error` is een opgeslagen boolean omdat filteren op `error != ''` in Table Storage onbetrouwbaar is. JSON-velden worden op 30k tekens afgekapt met een marker: één property mag max 64 KiB zijn, en een entry verliezen is erger dan een afgekapte SQL-string.
 
+**Bewaartermijn.** Audit-rijen worden **365 dagen** bewaard (`AUDIT_RETENTION_DAYS`, `0` = niet opruimen). Een audit-trail bestaat om achteraf te kunnen beantwoorden wie wat heeft opgevraagd, en die vraag komt laat: een kwartaal sluit, een klant vraagt ernaar, een incident wordt gereconstrueerd. Een jaar dekt de rapportagecyclus waar deze cijfers bij horen. Langer bewaren zou de UPN van elke aanroeper vasthouden zonder doel om naar te wijzen — dat mag de AVG niet; korter en de trail kan niets meer zeggen over het vorige kwartaal.
+
+Opruimen gebeurt in de app zelf: `server._audit_retention_loop()` draait `audit.purge_expired()` bij het starten en daarna elke 24 uur, in een worker-thread (de stores zijn synchroon). Geen extra job, geen extra rechten — de container heeft de managed identity al. Bij meerdere replica's draait elke replica zijn eigen lus; deletes zijn idempotent, dus dat is dubbel werk, geen fout. In Table Storage snijdt de purge op `PartitionKey` (de UTC-datum), dus hij leest geen rijen om te bepalen wat weg moet.
+
 **Foutreferenties** ([`errors.py`](../src/admcms_mcp/errors.py))
 
 `client_error(exc)` is de enige plek waar een exceptie een clientboodschap wordt. De volledige tekst — pyodbc noemt driver, servernaam en soms een stuk SQL — gaat naar het log én naar `entry.error` van de lopende audit-call; de client krijgt een neutrale zin met een referentie. Die referentie *is* de `id` van de audit-entry, dus `GET /admin/audit/{referentie}` levert het hele verhaal. Alle `except`-takken in [`tools.py`](../src/admcms_mcp/tools.py) en de DB-ping in `health_check` lopen hierlangs.
@@ -469,6 +473,7 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `AUDIT_STORE` | – | `azure_table` (prod) | Audit-store: `azure_table` / `local` / `none` |
 | `AUDIT_TABLE_ACCOUNT_URL` / `AUDIT_TABLE_NAME` | – | `https://<account>.table.core.windows.net` / `admcmsaudit` | Doel voor `azure_table` |
 | `AUDIT_DB_PATH` | – | `data/audit.db` | Alleen bij `AUDIT_STORE=local` |
+| `AUDIT_RETENTION_DAYS` | – | `365` | Bewaartermijn audit-rijen; `0` schakelt opruimen uit |
 | `MAX_ROWS_HARD_LIMIT` | – | `5000` | Harde row-cap |
 | `AZURE_CLIENT_ID` | – | client-id van MI `CMS-MCP-id-prod` | DefaultAzureCredential kiest de user-assigned MI |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | – | uit Bicep | Telemetrie |
@@ -494,7 +499,8 @@ flowchart LR
 - **Runtime**: `python:3.12-slim-bookworm` + msodbcsql18, non-root `appuser` (uid 10001), `uvicorn --proxy-headers --forwarded-allow-ips='*'` op poort 8000. Container Apps: 0.5 vCPU / 1 Gi, min 1 / max 3 replicas, http-scaling.
 - **Auth naar Azure vanuit CI**: federated OIDC (`AZURE_CLIENT_ID`/`AZURE_TENANT_ID` secrets, geen wachtwoorden).
 - **Rollback**: verkeer blijft op laatste gezonde revision; `az containerapp ingress traffic set …`.
-- **Nightly restart** leegt de in-memory caches: query-cache, filter-options-cache, allowlist-cache, JWKS-cache. De audit-trail staat sinds 2026-08-19 in Table Storage en overleeft de restart.
+- **Nightly restart** leegt de in-memory caches: query-cache, filter-options-cache, allowlist-cache, JWKS-cache. De audit-trail staat sinds 2026-08-19 in Table Storage en overleeft de restart — sinds 2026-08-27 staat dat ook in de bicep, zie §11 #2.
+- **Audit-storage in infra**: storage account (`auditStorageAccountName`, default `cmsmcpauditprod39b6`), `tableServices/default` + table, en *Storage Table Data Contributor* voor de managed identity. De naam is een parameter en geen afgeleide van `resourceToken`: het account bestond al vóór het in de bicep stond, en een afgeleide naam zou een tweede account aanmaken. `assignAuditTableRole=false` slaat de roltoewijzing over als een deploy struikelt over `RoleAssignmentExists` (de bestaande toewijzing is met de hand gemaakt en heeft een andere naam).
 - **Dependabot** wekelijks (pip, docker, github-actions); dependency-ranges hebben bovengrenzen per major (mcp 2.0 verwijderde `mcp.server.fastmcp`).
 - Volledige ops-handleiding: [`docs/DEPLOYMENT.md`](DEPLOYMENT.md); testen: [`docs/TESTING.md`](TESTING.md).
 
@@ -505,7 +511,7 @@ flowchart LR
 | # | Wat | Waar | Status |
 |---|---|---|---|
 | 1 | README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`, werkelijk **25** `@mcp.tool()` (incl. `describe_server`, `health_check`, `get_filter_options`, `get_dead_stock`, `get_country_segment_matrix`). | `README.md`, `server.py` | README in deze commit bijgewerkt; `tool_count` zou dynamisch (`len(await mcp.list_tools())`) moeten worden. |
-| 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py` | **Opgelost 2026-08-19**: `AzureTableStore` geïmplementeerd, `AUDIT_STORE=azure_table` in prod. |
+| 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py`, `infra/resources.bicep` | **Opgelost 2026-08-19** in de code (`AzureTableStore`, `AUDIT_STORE=azure_table` handmatig op de container app gezet) en **2026-08-27** in de infra: de bicep zei nog `local` + `/tmp/audit.db`, dus de eerstvolgende `az deployment group create` had prod teruggezet. Storage account, table, RBAC en env staan nu in de bicep, met een test die op die drift faalt. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
 | 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
 | 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Zie ook #11 voor het geheugenaspect. |
@@ -515,6 +521,7 @@ flowchart LR
 | 9 | ~~Rauwe pyodbc-tekst (driver, servernaam, SQL-fragment) ging naar de client.~~ | `tools.py`, `server.py` | **Opgelost 2026-08-27**: `errors.client_error()` maskeert; volledige tekst in log + audit-entry, client krijgt een referentie. |
 | 10 | Geen rate-limiting of concurrency-rem per gebruiker; één zware `query_database` kan de server voor iedereen bezet houden. | `server.py`, `db.py` | Open — zie bevinding 4 van de review van 2026-08-27. |
 | 11 | Query-cache in `db.py` heeft geen eviction en groeit onbegrensd. | `db.py` | Open — zie bevinding 5. |
+| 12 | Nachtelijke restart (`nightly-restart.yml`) staat er als workaround; de oorzaak was nooit onderzocht. | `.github/workflows/` | **Onderzocht 2026-08-27**: de container wordt overdag al door Azure herstart doordat `/healthz` niet antwoordt terwijl een trage query de event loop blokkeert (`ReplicaUnhealthy` → *failed liveness probe*, 13× op 27-08). De nachtelijke restart lost dat niet op en verbergt het. Advies: laten staan tot de event-loop-blokkade en #11 zijn opgelost, daarna verwijderen. Voor de audit is hij niet langer schadelijk nu de trail in Table Storage staat. |
 
 ---
 
@@ -542,5 +549,6 @@ Werk bovenaan de regel *"Laatst geverifieerd tegen commit …"* bij.
 
 | Datum | Commit | Wat |
 |---|---|---|
+| 2026-08-27 | (deze commit) | §8 bewaartermijn + opruimlus, §9 `AUDIT_RETENTION_DAYS`, §10 audit-storage in bicep, §11 items 2 en 12. |
 | 2026-08-27 | (deze commit) | §4.2 proxy-hardening (client_id-pin, grant_type-allowlist, redirect_uri-afweging); §8 foutreferenties via `errors.py` + admin-rol rechtgezet; §11 items 8–11. |
 | 2026-08-19 | (deze commit) | Eerste versie na volledige code-analyse (auth, autorisatie, groepen, 25 tools, data-laag, audit, deploy). |

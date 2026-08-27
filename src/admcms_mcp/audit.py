@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import os
 import time
 import uuid
 from contextlib import contextmanager
@@ -116,6 +117,45 @@ def audit_call(tool_name: str, args: dict[str, Any]):
         except Exception:
             # Audit logging must never break the tool call itself.
             logger.exception("Failed to write audit entry for %s", tool_name)
+
+
+#: How long audit rows are kept. An audit trail exists to answer "who looked at
+#: what, and when", and that question is asked long after the fact — a quarter
+#: closes, a customer asks, an incident is reconstructed. A year covers the
+#: reporting cycle these numbers belong to. Longer would keep personal data
+#: (the UPN of every caller) with no purpose left to point at, which the AVG
+#: does not allow; shorter and the trail cannot answer for the previous quarter.
+DEFAULT_RETENTION_DAYS = 365
+
+
+def retention_days() -> int:
+    """Configured retention in days; 0 or less disables purging."""
+    raw = os.environ.get("AUDIT_RETENTION_DAYS", "")
+    if not raw.strip():
+        return DEFAULT_RETENTION_DAYS
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("AUDIT_RETENTION_DAYS=%r is not a number; keeping the default", raw)
+        return DEFAULT_RETENTION_DAYS
+
+
+def purge_expired() -> int:
+    """Drop audit rows past the retention age. Returns how many were removed.
+
+    Blocking: the stores are synchronous. Callers on the event loop must hand
+    this to a worker thread.
+    """
+    days = retention_days()
+    if days <= 0:
+        logger.info("Audit retention disabled (AUDIT_RETENTION_DAYS=%s)", days)
+        return 0
+    try:
+        return get_store().purge_older_than(days)
+    except Exception:
+        # Housekeeping must never take the server down with it.
+        logger.exception("Audit purge failed")
+        return 0
 
 
 def current_entry() -> AuditEntry | None:
