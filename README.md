@@ -6,15 +6,20 @@ bruikbaar vanuit Claude, Copilot Studio, Cursor en VS Code.
 
 ## Status
 
-**Live sinds**: 2026-05-12 · **Versie**: V1 (multi-tenant Entra, 20 read-only tools)
+**Live sinds**: 2026-05-12 · **Versie**: V1 (multi-tenant Entra, 25 read-only tools, rollen per tool)
+
+> **Werk je hier voor het eerst weer aan?** Lees de samenvatting bovenaan
+> [`CHANGELOG.md`](CHANGELOG.md) — de ronde van 27 augustus verandert hoe je een
+> tool registreert (`async`), hoe je fouten teruggeeft, en voegt rollen toe.
 
 | Onderdeel | Waarde |
 |---|---|
-| **MCP endpoint** | `https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/mcp` |
-| Health check | `https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/healthz` |
-| OAuth metadata | `https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/.well-known/oauth-protected-resource` |
+| **MCP endpoint** | `https://admcms.campai.nl/mcp` (Campai) · `https://mcp-cms-adm.cmsnl.com/mcp` (klantnaam) |
+| Health check | `https://admcms.campai.nl/healthz` |
+| OAuth metadata | `https://admcms.campai.nl/.well-known/oauth-protected-resource` |
+| Container-app FQDN | `cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io` (fallback; gebruik de hostnames hierboven) |
 | Entra App ID | `1e6983d3-f996-4581-9518-e6819b79ac6a` |
-| Scope | `admcms.read` |
+| Scope | `admcms.read` · app roles `admcms.finance` / `.sales` / `.it` / `.viewer` / `.admin` |
 
 ## Wie doet wat
 
