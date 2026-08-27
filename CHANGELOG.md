@@ -8,6 +8,22 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — `scripts/discover_schemas.py` gered
+
+Op de laptop stond nog een losse kopie van dit project uit april, buiten git om.
+Die is opgeruimd; dit script was het enige eruit dat het bewaren waard was.
+
+Het dumpt de kolomnamen van ADMCMS-tabellen via de `get_schema`-tool, precies de
+gewoonte die `CLAUDE.md` voorschrijft: verifiëren in plaats van gokken. ADMCMS
+straft gokken af — `Quantity` heet `ThisIinvoice`, `UnitPrice` heet
+`SalesPrice`, en `CustSuppnr` op Salesinvoice heet `Customer`.
+
+Bijgewerkt ten opzichte van de oude versie: een `--token` (of `ADMCMS_MCP_TOKEN`)
+zodat hij ook tegen de echte server werkt en niet alleen tegen een lokale met
+`AUTH_DISABLED=true`, en `--tables` om andere tabellen op te vragen.
+
+---
+
 ## 2026-08-27 — Rollen per tool
 
 Tot nu toe kende de server één soort gebruiker: wie op de allowlist stond mocht
