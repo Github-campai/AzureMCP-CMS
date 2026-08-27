@@ -8,6 +8,72 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — Hardening ronde 4: injectie, groepen, CORS, SQL-check en opruiming
+
+### Databasetekst ging ongemarkeerd naar het model
+
+Een productomschrijving of klantnaam in ADMCMS is door een mens ingetypt, en een
+model dat zo'n veld leest kan er een instructie in vinden. Tools gaven die
+tekst als kale JSON terug, en de server gaf helemaal geen `instructions=` mee.
+
+`server._audited` markeert nu de vrije-tekstkolommen (`Searchname`,
+`Description`) van elke `data`- en `rows`-lijst met `⟦extern⟧…⟦/extern⟧`, en de
+server-instructions leggen uit dat wat daartussen staat gegevens zijn en nooit
+een opdracht. De formulering is overgenomen van de Campai Securitech-MCP, zodat
+een client die met beide praat één afspraak leert in plaats van twee.
+
+Bewust kort gehouden: codes, datums, bedragen en magazijnletters kunnen geen zin
+bevatten, en waarden die bedoeld zijn om terug te geven aan een tool
+(`get_lookups`, `get_filter_options`) worden níét gemarkeerd — een gemarkeerde
+filterwaarde matcht nergens meer op.
+
+### Een gebruiker in te veel groepen viel stil om
+
+Boven ~200 groepslidmaatschappen laat Entra de `groups`-claim weg. Zo iemand
+kwam alleen nog via de user-lijst binnen, en een beheerder die zijn toegang aan
+een groep ontleende werd geweigerd met "User not on allowlist" — een melding die
+niets uitlegt. De overage wordt nu herkend (`_claim_names` / `hasgroups`),
+gelogd, en de weigering zegt wat er aan de hand is en hoe het op te lossen.
+Ook opgeschreven in `docs/ONBOARDING-CUSTOMER.md`, want dit gaat bij een grote
+klanttenant een keer gebeuren.
+
+### CORS stond op `*`
+
+Elke website kon `/admin` en `/mcp` vanuit de browser van een bezoeker
+aanroepen. Er is geen cookie, dus een aanvaller heeft nog steeds een bearer
+token nodig — maar een token dat in JavaScript belandt hoort niet ook nog
+toestemming te krijgen om overal vandaan gebruikt te worden. Nu: de eigen
+hostnames plus `null` (de admin-UI over `file://`). `CORS_ALLOW_ORIGINS=*` zet
+het oude gedrag terug als een browserclient er toch over valt; lokaal zonder
+`PUBLIC_BASE_URL` blijft het `*`.
+
+### `validate_query` weigerde data en liet structuur door
+
+Twee kanten van dezelfde fout: `;` werd niet geweigerd (stacked statements
+werden alleen indirect gevangen), terwijl een legitieme query met "update" in
+een stringliteral juist wél sneuvelde — zonder dat de melding uitlegde waarom.
+
+Nu wordt de check gedaan op de query met de inhoud van `'…'`-literals
+leeggemaakt: een product dat "update kit" heet is geen UPDATE-statement, en
+`;` mag alleen nog de query afsluiten. De foutmeldingen zeggen wat er geweigerd
+is en hoe het wél kan, en `ARCHITECTUUR.md` §7 legt vast dat de databaserechten
+(`db_datareader`) de primaire waarborg zijn en deze check de tweede laag.
+
+### Opruiming
+
+- `health_check.tool_count` stond hardcoded op 23 terwijl er 25 tools zijn. Het
+  is nu `len(await mcp.list_tools())`, dus het kan niet meer uit de pas lopen.
+- Test-aantallen gelijkgetrokken: README zei 279, CLAUDE.md 357. Het zijn er
+  442. `docs/TESTING.md` zei 21 tools, dat zijn er 25.
+- `keyvault._env_override` liet secrets uit de omgeving komen, ook in
+  productie. Nu achter `ALLOW_ENV_SECRETS` (default uit); productie zet geen van
+  die variabelen, dus daar verandert er niets.
+
+Tests: 27 nieuwe (`tests/test_hardening_small.py`, uitbreiding van
+`tests/test_db_validator.py`).
+
+---
+
 ## 2026-08-27 — Hardening ronde 3: weerbaarheid
 
 ### De server bevroor bij elke zware vraag — en Azure herstartte hem daarom
