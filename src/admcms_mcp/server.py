@@ -1,8 +1,9 @@
 """HTTP server: Starlette app with MCP Streamable HTTP + Entra JWT auth."""
 
+import asyncio
 import html
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 # Load .env into os.environ so keyvault.py's env-var overrides (e.g.
 # ADMCMS_DB_USERNAME / ADMCMS_DB_PASSWORD) work without Key Vault in
@@ -25,7 +26,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from admcms_mcp.admin import build_admin_routes
-from admcms_mcp.audit import audit_call, current_user
+from admcms_mcp.audit import audit_call, current_subject, current_user, purge_expired
 from admcms_mcp.auth import (
     Forbidden,
     InvalidToken,
@@ -43,6 +44,7 @@ from admcms_mcp.branding import (
 from admcms_mcp.config import get_settings
 from admcms_mcp.db import _MAX_ROWS_HARD_LIMIT, reset_truncation, was_truncated
 from admcms_mcp.errors import client_error
+from admcms_mcp.limits import ConcurrencyLimitReached, limiter
 from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
 from admcms_mcp.oauth import build_oauth_routes, protected_resource_metadata_url
 from admcms_mcp.schema import SCHEMA_KNOWLEDGE
@@ -124,6 +126,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             if settings.auth_disabled:
                 request.state.user_claims = {"oid": "local-dev", "upn": "dev@localhost"}
                 current_user.set("dev@localhost")
+                current_subject.set("local-dev")
                 return await call_next(request)
 
             auth_header = request.headers.get("authorization", "")
@@ -134,13 +137,18 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             if not token:
                 return self._unauthorized(request, "Empty bearer token")
 
+            # Both of these do blocking network I/O on a cache miss — the JWKS
+            # fetch over httpx, the allowlist through the Key Vault SDK. On the
+            # event loop that stalls every other request in flight, and the
+            # allowlist misses every five minutes by design. Hand them to a
+            # worker thread instead.
             try:
-                claims = validate_jwt(token)
+                claims = await asyncio.to_thread(validate_jwt, token)
             except InvalidToken as e:
                 return self._unauthorized(request, str(e))
 
             try:
-                check_access(claims)
+                await asyncio.to_thread(check_access, claims)
             except Forbidden as e:
                 return JSONResponse(
                     {"error": "forbidden", "detail": _sanitize(str(e))},
@@ -151,7 +159,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             # the SQL their questions produced. Data access is not enough.
             if path.startswith("/admin"):
                 try:
-                    check_admin_access(claims)
+                    await asyncio.to_thread(check_admin_access, claims)
                 except Forbidden as e:
                     return JSONResponse(
                         {"error": "forbidden", "detail": _sanitize(str(e))},
@@ -160,6 +168,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
 
             request.state.user_claims = claims
             current_user.set(claims.get("upn") or claims.get("oid") or "authenticated")
+            current_subject.set(claims.get("oid") or claims.get("upn") or "authenticated")
             return await call_next(request)
         except Exception:
             # Fail closed on any unexpected error — never pass-through to MCP.
@@ -319,7 +328,7 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
-def _audited(tool_name: str, args: dict, call):
+def _audited_sync(tool_name: str, args: dict, call):
     """Run a tool inside an audit_call context and record summary/row_count/error.
 
     Also the single place where row-cap truncation is surfaced. Every tool goes
@@ -349,6 +358,37 @@ def _audited(tool_name: str, args: dict, call):
                     "gebruik describe_server voor de limieten per tool.",
                 )
         return result
+
+
+async def _audited(tool_name: str, args: dict, call):
+    """Queue behind the caller's limit, then run the tool off the event loop.
+
+    Every tool passes through here, which makes it the one place that can hold
+    both guarantees at once.
+
+    **Off the event loop.** The MCP SDK calls a synchronous tool function
+    directly on the loop (`func_metadata.call_fn_with_arg_validation`). A pyodbc
+    query may run for up to `_QUERY_TIMEOUT_SECONDS`, and for all that time the
+    process answers nothing — not a second request, not `/healthz`. Azure reads
+    that silence as a dead container and restarts it, which drops every client
+    connected to that replica. Handing the work to a worker thread is what keeps
+    the server answering while a query runs.
+
+    **Behind the caller's limit.** See `limits.py`: one person's heavy questions
+    must not be able to occupy the whole connection pool.
+
+    ContextVars (the audit entry, `current_user`) are copied into the worker
+    thread by asyncio, so auditing keeps working unchanged.
+    """
+    subject = current_subject.get()
+    try:
+        async with limiter.slot(subject, tool_name=tool_name):
+            return await asyncio.to_thread(_audited_sync, tool_name, args, call)
+    except ConcurrencyLimitReached as e:
+        refusal = {"data": [], "summary": None, "error": str(e)}
+        # Audited like any other outcome, so a user hitting the ceiling is
+        # visible in /admin/audit instead of only in the logs.
+        return await asyncio.to_thread(_audited_sync, tool_name, args, lambda: refusal)
 
 
 def _build_mcp_server() -> FastMCP:
@@ -382,7 +422,7 @@ def _build_mcp_server() -> FastMCP:
     )
 
     @mcp.tool()
-    def query_database(sql: str, max_rows: int = 100) -> dict:
+    async def query_database(sql: str, max_rows: int = 100) -> dict:
         """Execute a read-only SELECT query. LAST RESORT — use dedicated tools first.
 
         Before using: prefer a dedicated tool (get_revenue, get_top_customers,
@@ -413,28 +453,30 @@ def _build_mcp_server() -> FastMCP:
 
         Rule: SELECT and WITH only. Max 500 rows per query.
         """
-        return _audited(
+        return await _audited(
             "query_database",
             {"sql": sql, "max_rows": max_rows},
             lambda: _query_database(sql, max_rows=max_rows),
         )
 
     @mcp.tool()
-    def get_schema(table_name: str) -> dict:
+    async def get_schema(table_name: str) -> dict:
         """Return column metadata for an ADMCMS table."""
-        return _audited("get_schema", {"table_name": table_name}, lambda: _get_schema(table_name))
+        return await _audited(
+            "get_schema", {"table_name": table_name}, lambda: _get_schema(table_name)
+        )
 
     @mcp.tool()
-    def get_lookups(table_name: str, column_name: str, top_n: int = 50) -> dict:
+    async def get_lookups(table_name: str, column_name: str, top_n: int = 50) -> dict:
         """Return up to `top_n` distinct values for a column."""
-        return _audited(
+        return await _audited(
             "get_lookups",
             {"table_name": table_name, "column_name": column_name, "top_n": top_n},
             lambda: _get_lookups(table_name, column_name, top_n=top_n),
         )
 
     @mcp.tool()
-    def search_products(search_term: str, limit: int = 20, offset: int = 0) -> dict:
+    async def search_products(search_term: str, limit: int = 20, offset: int = 0) -> dict:
         """Search ADMCMS products by search term.
 
         Matches on Productcode or Searchname using LIKE. Paging via
@@ -448,14 +490,14 @@ def _build_mcp_server() -> FastMCP:
         Returns: {data: list of products, summary: {count, search_term,
                   offset, limit, has_more, next_offset, ...}, error}.
         """
-        return _audited(
+        return await _audited(
             "search_products",
             {"search_term": search_term, "limit": limit, "offset": offset},
             lambda: _search_products(search_term, limit=limit, offset=offset),
         )
 
     @mcp.tool()
-    def get_revenue(
+    async def get_revenue(
         start_date: str,
         end_date: str,
         group_by: str = "total",
@@ -483,7 +525,7 @@ def _build_mcp_server() -> FastMCP:
 
         Returns: {data, summary: {total_amount, [total_amount_ly], period, ...}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_revenue",
             {
                 "start_date": start_date,
@@ -498,7 +540,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_margin_report(
+    async def get_margin_report(
         start_date: str,
         end_date: str,
         group_by: str = "total",
@@ -527,7 +569,7 @@ def _build_mcp_server() -> FastMCP:
         Returns: {data: rows with turnover, cost, margin, margin_pct, ...,
                   summary: {turnover, margin, margin_pct, ...}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_margin_report",
             {
                 "start_date": start_date,
@@ -542,7 +584,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_kpi_summary(
+    async def get_kpi_summary(
         start_date: str,
         end_date: str,
         include_ly: bool = True,
@@ -572,7 +614,7 @@ def _build_mcp_server() -> FastMCP:
         Returns: {data: [single row with ~30 fields], summary: {same fields +
                   period + ly_period}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_kpi_summary",
             {
                 "start_date": start_date,
@@ -584,7 +626,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict:
+    async def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict:
         """Aggregate sales invoice revenue between two ISO dates, split per business unit.
 
         Business units are derived from CustSupplier.CustSuppGroup:
@@ -602,14 +644,14 @@ def _build_mcp_server() -> FastMCP:
         Returns: {data: [{business_unit, invoice_count, total_amount}, ...],
                   summary: {total_amount, invoice_count, period, business_units}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_revenue_by_business_unit",
             {"start_date": start_date, "end_date": end_date},
             lambda: _get_revenue_by_business_unit(start_date, end_date),
         )
 
     @mcp.tool()
-    def get_country_segment_matrix(
+    async def get_country_segment_matrix(
         start_date: str, end_date: str, filters: dict | None = None
     ) -> dict:
         """Country x Segment matrix: turnover, margin (+%) and shipping (+cost/margin/%).
@@ -629,14 +671,14 @@ def _build_mcp_server() -> FastMCP:
                   shipping, shipping_cost, shipping_margin, shipping_margin_pct}, ...],
                   summary: {turnover, margin, margin_pct, rows, period}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_country_segment_matrix",
             {"start_date": start_date, "end_date": end_date, "filters": filters},
             lambda: _get_country_segment_matrix(start_date, end_date, filters=filters),
         )
 
     @mcp.tool()
-    def get_top_customers(
+    async def get_top_customers(
         start_date: str,
         end_date: str,
         limit: int = 10,
@@ -660,14 +702,14 @@ def _build_mcp_server() -> FastMCP:
         Returns: {data: [{CustSuppnr, Searchname, CustSuppGroup, invoice_count,
                   total_amount}, ...], summary: {top_total_amount, count, period}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_top_customers",
             {"start_date": start_date, "end_date": end_date, "limit": limit, "filters": filters},
             lambda: _get_top_customers(start_date, end_date, limit=limit, filters=filters),
         )
 
     @mcp.tool()
-    def get_shipping_summary(
+    async def get_shipping_summary(
         start_date: str,
         end_date: str,
         exclude_credits: bool = True,
@@ -687,7 +729,7 @@ def _build_mcp_server() -> FastMCP:
         Returns: {data: [single row], summary: {invoice_count, total_ship_cost,
                   total_ship_cost_calculated, ship_cost_delta, ...}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_shipping_summary",
             {
                 "start_date": start_date,
@@ -704,7 +746,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_shipping_cost_analysis(
+    async def get_shipping_cost_analysis(
         start_date: str,
         end_date: str,
         group_by: str = "segment_carrier",
@@ -738,7 +780,7 @@ def _build_mcp_server() -> FastMCP:
 
         Returns: {data: rows with shipping metrics, summary: {...}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_shipping_cost_analysis",
             {
                 "start_date": start_date,
@@ -763,7 +805,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def detect_price_anomalies(
+    async def detect_price_anomalies(
         start_date: str,
         end_date: str,
         min_price: float = 10000.0,
@@ -786,7 +828,7 @@ def _build_mcp_server() -> FastMCP:
             limit: rows per page, clamped 1-500, default 50.
             offset: row to start from, default 0.
         """
-        return _audited(
+        return await _audited(
             "detect_price_anomalies",
             {
                 "start_date": start_date,
@@ -801,7 +843,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_stock_levels(
+    async def get_stock_levels(
         product_code: str | None = None,
         warehouse: str | None = None,
         only_available: bool = True,
@@ -820,7 +862,7 @@ def _build_mcp_server() -> FastMCP:
             limit: rows per page, clamped 1-500, default 100.
             offset: row to start from, default 0.
         """
-        return _audited(
+        return await _audited(
             "get_stock_levels",
             {
                 "product_code": product_code,
@@ -839,7 +881,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_supplier_purchases(
+    async def get_supplier_purchases(
         start_date: str,
         end_date: str,
         limit: int = 10,
@@ -861,7 +903,7 @@ def _build_mcp_server() -> FastMCP:
                   total_vat, total_other_costs}, ...], summary: {top_total_goods,
                   count, period, corrupt_excluded}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_supplier_purchases",
             {
                 "start_date": start_date,
@@ -875,7 +917,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_customer_orders(
+    async def get_customer_orders(
         customer_id: int | None = None, limit: int = 50, offset: int = 0
     ) -> dict:
         """List recent sales orders, optionally filtered by customer.
@@ -888,14 +930,14 @@ def _build_mcp_server() -> FastMCP:
             limit: rows per page, clamped 1-500, default 50.
             offset: row to start from, default 0.
         """
-        return _audited(
+        return await _audited(
             "get_customer_orders",
             {"customer_id": customer_id, "limit": limit, "offset": offset},
             lambda: _get_customer_orders(customer_id=customer_id, limit=limit, offset=offset),
         )
 
     @mcp.tool()
-    def get_credit_note_analysis(
+    async def get_credit_note_analysis(
         start_date: str,
         end_date: str,
         group_by: str = "segment",
@@ -914,7 +956,7 @@ def _build_mcp_server() -> FastMCP:
                 "make", "month".
             include_ly: compare with same period 1 year earlier. Default False.
         """
-        return _audited(
+        return await _audited(
             "get_credit_note_analysis",
             {
                 "start_date": start_date,
@@ -928,7 +970,9 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_payment_method_stats(start_date: str, end_date: str, include_ly: bool = False) -> dict:
+    async def get_payment_method_stats(
+        start_date: str, end_date: str, include_ly: bool = False
+    ) -> dict:
         """Payment-method mix per invoice (PREP/AC/CC/LINK/ACD/ACC/RFI).
 
         Scope: regular invoices only (InvoiceType='0'). Per PaymentCondition
@@ -943,14 +987,16 @@ def _build_mcp_server() -> FastMCP:
             end_date: ISO YYYY-MM-DD, exclusive.
             include_ly: YoY delta per method. Default False.
         """
-        return _audited(
+        return await _audited(
             "get_payment_method_stats",
             {"start_date": start_date, "end_date": end_date, "include_ly": include_ly},
             lambda: _get_payment_method_stats(start_date, end_date, include_ly=include_ly),
         )
 
     @mcp.tool()
-    def get_salesrep_performance(start_date: str, end_date: str, include_ly: bool = False) -> dict:
+    async def get_salesrep_performance(
+        start_date: str, end_date: str, include_ly: bool = False
+    ) -> dict:
         """Per-salesrep KPIs: invoices, unique customers, turnover, AOV.
 
         Scope: paid regular invoices only (InvoiceType='0' AND FullyPaid=1).
@@ -961,14 +1007,14 @@ def _build_mcp_server() -> FastMCP:
             end_date: ISO YYYY-MM-DD, exclusive.
             include_ly: YoY delta per salesrep. Default False.
         """
-        return _audited(
+        return await _audited(
             "get_salesrep_performance",
             {"start_date": start_date, "end_date": end_date, "include_ly": include_ly},
             lambda: _get_salesrep_performance(start_date, end_date, include_ly=include_ly),
         )
 
     @mcp.tool()
-    def get_discount_analysis(
+    async def get_discount_analysis(
         start_date: str,
         end_date: str,
         group_by: str = "segment",
@@ -990,7 +1036,7 @@ def _build_mcp_server() -> FastMCP:
                 get_filter_options to discover valid values. Omit for
                 unchanged behaviour.
         """
-        return _audited(
+        return await _audited(
             "get_discount_analysis",
             {
                 "start_date": start_date,
@@ -1004,7 +1050,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_order_origin_mix(
+    async def get_order_origin_mix(
         start_date: str,
         end_date: str,
         include_ly: bool = False,
@@ -1026,7 +1072,7 @@ def _build_mcp_server() -> FastMCP:
                 get_filter_options to discover valid values. Omit for
                 unchanged behaviour.
         """
-        return _audited(
+        return await _audited(
             "get_order_origin_mix",
             {
                 "start_date": start_date,
@@ -1040,7 +1086,7 @@ def _build_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    def get_filter_options() -> dict:
+    async def get_filter_options() -> dict:
         """Return distinct values for each filter dimension (data-driven dropdowns).
 
         Backs the `filters` arg on get_revenue, get_margin_report,
@@ -1051,10 +1097,10 @@ def _build_mcp_server() -> FastMCP:
         ["B2C","B2B","IC"], country: [top ~50 by frequency], make: [top ~100
         by frequency], productgroup: [top ~100 by frequency]}.
         """
-        return _audited("get_filter_options", {}, lambda: _get_filter_options())
+        return await _audited("get_filter_options", {}, lambda: _get_filter_options())
 
     @mcp.tool()
-    def get_dead_stock(
+    async def get_dead_stock(
         months_without_sale: int = 12,
         min_stock_value: float = 100.0,
         group_by: str = "product",
@@ -1096,7 +1142,7 @@ def _build_mcp_server() -> FastMCP:
         Returns: {data, summary: {total_dead_stock_value, total_dead_sku_count,
                   never_sold_count, never_sold_value, cutoff_date, ...}, error}.
         """
-        return _audited(
+        return await _audited(
             "get_dead_stock",
             {
                 "months_without_sale": months_without_sale,
@@ -1217,7 +1263,7 @@ def _build_mcp_server() -> FastMCP:
         }
 
     @mcp.tool()
-    def health_check() -> dict:
+    async def health_check() -> dict:
         """Diagnostic ping: server up, DB reachable, who-am-I, tool count.
 
         Use this when you want to confirm end-to-end that the MCP server
@@ -1246,7 +1292,9 @@ def _build_mcp_server() -> FastMCP:
             # DB ping
             db_start = time.perf_counter()
             try:
-                rows = execute_query("SELECT 1 AS ping", max_rows=1)
+                # Uncached: a cached ping would report a healthy database
+                # for ten more minutes after it went down.
+                rows = execute_query("SELECT 1 AS ping", max_rows=1, use_cache=False)
                 result["database"]["latency_ms"] = round((time.perf_counter() - db_start) * 1000, 1)
                 if not rows or rows[0].get("ping") != 1:
                     result["database"]["status"] = "degraded"
@@ -1270,7 +1318,7 @@ def _build_mcp_server() -> FastMCP:
         # The probe runs *inside* the audit context, so a failing ping lands on
         # an audit entry and the reference handed to the caller resolves under
         # GET /admin/audit/{reference}.
-        return _audited("health_check", {}, probe)
+        return await _audited("health_check", {}, probe)
 
     @mcp.resource("admcms://schema-knowledge")
     def schema_resource() -> str:
@@ -1278,6 +1326,34 @@ def _build_mcp_server() -> FastMCP:
         return SCHEMA_KNOWLEDGE
 
     return mcp
+
+
+#: Seconds between audit purges. Retention is measured in days, so once a day is
+#: often enough; the first pass runs at startup so a restart also cleans up.
+_AUDIT_PURGE_INTERVAL_SECONDS = 24 * 3600
+
+
+async def _audit_retention_loop() -> None:
+    """Delete audit rows past their retention age, once a day.
+
+    Runs in the app rather than as a scheduled job: the container already holds
+    the managed identity that may write the table, so nothing new has to be
+    granted anywhere. Every replica runs its own loop; deletes are idempotent,
+    so the duplicate work is wasted effort, not a correctness problem.
+
+    The store is synchronous, so the purge goes to a worker thread — this must
+    not be the thing that blocks the event loop.
+    """
+    while True:
+        try:
+            removed = await asyncio.to_thread(purge_expired)
+            if removed:
+                logger.info("Audit retention: removed %d expired entries", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Audit retention pass failed; will retry tomorrow")
+        await asyncio.sleep(_AUDIT_PURGE_INTERVAL_SECONDS)
 
 
 def build_app() -> Starlette:
@@ -1301,7 +1377,13 @@ def build_app() -> Starlette:
         # manager task group) to the outer Starlette. Without this, the
         # mounted /mcp endpoint crashes with "Task group is not initialized".
         async with mcp_asgi_app.router.lifespan_context(mcp_asgi_app):
-            yield
+            housekeeping = asyncio.create_task(_audit_retention_loop())
+            try:
+                yield
+            finally:
+                housekeeping.cancel()
+                with suppress(asyncio.CancelledError):
+                    await housekeeping
 
     routes = [
         Route("/", index, methods=["GET"]),

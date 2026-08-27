@@ -133,6 +133,16 @@ flowchart TD
 
 ## 3. Request-flow door de server
 
+> **Niets blokkeert de event loop.** De auth-middleware draait `validate_jwt`,
+> `check_access` en `check_admin_access` via `asyncio.to_thread` (JWKS-fetch en
+> Key Vault zijn synchroon, en de allowlist-cache verloopt elke 5 minuten), en
+> `_audited` draait elke tool-handler via `asyncio.to_thread`. Dat laatste is
+> geen optimalisatie maar de reden dat de container blijft draaien: de MCP SDK
+> roept een synchrone tool-functie rechtstreeks op de loop aan, en een query van
+> 180 seconden liet `/healthz` stilvallen — waarna Azure's liveness-probe de
+> container neerhaalde en iedereen zijn verbinding verloor.
+
+
 Middleware-volgorde in [`build_app()`](../src/admcms_mcp/server.py) (buitenste eerst):
 
 1. **CORSMiddleware** — `allow_origins=["*"]`, exposeert `WWW-Authenticate`, `Mcp-Session-Id`, `Mcp-Protocol-Version` (nodig voor browser-clients en de admin-UI). Staat buiten auth zodat preflight-OPTIONS niet 401't.
@@ -412,8 +422,9 @@ Alles in [`db.py`](../src/admcms_mcp/db.py).
 | `validate_query(sql)` | Eerste token moet `SELECT` of `WITH` zijn (leidende `(` toegestaan); daarna regex-blacklist op hele tekst: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, EXEC(UTE), MERGE, GRANT, REVOKE → `ValueError`. |
 | Identifiers | `get_lookups`/`get_distinct_values`: tabel/kolom moeten matchen `^[A-Za-z_][A-Za-z0-9_]{0,127}$` en worden `[…]`-gequote. Waarden altijd via `?`-parameters. |
 | Verbinding | `pyodbc`, ODBC Driver 18, `Encrypt=yes`, `autocommit=True` (geen open transacties/locks), connect-timeout 30 s, **query-timeout 180 s**. Credentials `admcms-db-username`/`-password` uit Key Vault (1× per nieuwe verbinding). |
-| Pool | Max **8** verbindingen (`_POOL_MAX`); dode verbinding wordt transparant vervangen (`SELECT 1`-ping bij uitlenen); verbinding met DB-fout wordt weggegooid. Nodig omdat FastMCP sync-tools in een threadpool draait en dashboard-tegels parallel komen. |
-| Result-cache | In-process, key `(sql, params, effective_rows)`, TTL **600 s**. Truncation-status wordt mee-gecachet. Geen invalidatie — nightly restart leegt hem. |
+| Pool | Max **8** verbindingen (`_POOL_MAX`); dode verbinding wordt transparant vervangen (`SELECT 1`-ping bij uitlenen); verbinding met DB-fout wordt weggegooid. Nodig omdat tool-handlers sinds 2026-08-27 in een worker-thread draaien (zie §3) en dashboard-tegels parallel komen. |
+| Result-cache | In-process, key `(sql, params, effective_rows)`, TTL **600 s**, **LRU met max 256 entries**. Truncation-status wordt mee-gecachet. Verlopen entries gaan eruit bij een miss; daarboven verdwijnt de minst recent gebruikte. `use_cache=False` voor `query_database` (elke vrije query is uniek, cachen levert alleen sleutels op) en voor de `SELECT 1` van `health_check` (een gecachete ping meldt tien minuten lang een gezonde database die al plat ligt). **De sleutel bevat bewust geen gebruiker**: iedereen mag vandaag dezelfde rijen zien, en dat delen is precies wat de cache oplevert. Zodra een tool per klant gaat filteren moet de sleutel een subject krijgen — `tests/test_query_cache.py::test_cache_key_is_not_per_user` legt dat vast. |
+| Concurrency per gebruiker | Max **3** gelijktijdige tool-calls per `oid` ([`limits.py`](../src/admcms_mcp/limits.py), `MAX_CONCURRENT_QUERIES_PER_USER`, `0` = uit). Boven de limiet wacht een call tot **60 s** (`QUERY_QUEUE_TIMEOUT_SECONDS`) — dashboard-tegels komen legitiem tegelijk binnen en horen te wachten, niet te falen — en krijgt daarna een leesbare weigering die ook in de audit belandt. Staat per replica in het geheugen; met `maxReplicas: 3` is de feitelijke bovengrens dus hoger. Een teller per minuut is bewust *niet* toegevoegd: het probleem is queryduur, niet frequentie. |
 | Row-cap | `max_rows` geclampt naar 1..`MAX_ROWS_HARD_LIMIT` (env, default **5000**). `fetchmany(n+1)` om afkapping te detecteren → `_note_truncation()` (ContextVar per tool-call). |
 | Truncation-signaal | `server._audited` zet `truncated: true` + `truncated_hint` op de response. `describe_server` legt dit uit aan de LLM. |
 | Audit-koppeling | Elke uitgevoerde query wordt via `audit.record_sql(sql, params, duration_ms, row_count)` aan de actieve audit-entry gehangen. |
@@ -431,6 +442,10 @@ mislukte refresh wordt niet "vers" geserveerd — nightly restart maakte `now-0.
 - Schrijven naar de store faalt nooit de tool-call (exception → log).
 - Stores via env `AUDIT_STORE`: `azure_table` (**prod**, Azure Table Storage via de managed identity; `AUDIT_TABLE_ACCOUNT_URL`, `AUDIT_TABLE_NAME`), `local` (SQLite, `AUDIT_DB_PATH` — lokale ontwikkeling), `none` (NullStore, tests).
 - **AzureTableStore-indeling**: PartitionKey = UTC-datum (tijdvraag raakt enkele partities i.p.v. de hele tabel), RowKey = geïnverteerde tick-count + entry-id (Table Storage sorteert alleen oplopend, dus inverteren maakt "nieuwste eerst" de natuurlijke leesorde). `has_error` is een opgeslagen boolean omdat filteren op `error != ''` in Table Storage onbetrouwbaar is. JSON-velden worden op 30k tekens afgekapt met een marker: één property mag max 64 KiB zijn, en een entry verliezen is erger dan een afgekapte SQL-string.
+
+**Bewaartermijn.** Audit-rijen worden **365 dagen** bewaard (`AUDIT_RETENTION_DAYS`, `0` = niet opruimen). Een audit-trail bestaat om achteraf te kunnen beantwoorden wie wat heeft opgevraagd, en die vraag komt laat: een kwartaal sluit, een klant vraagt ernaar, een incident wordt gereconstrueerd. Een jaar dekt de rapportagecyclus waar deze cijfers bij horen. Langer bewaren zou de UPN van elke aanroeper vasthouden zonder doel om naar te wijzen — dat mag de AVG niet; korter en de trail kan niets meer zeggen over het vorige kwartaal.
+
+Opruimen gebeurt in de app zelf: `server._audit_retention_loop()` draait `audit.purge_expired()` bij het starten en daarna elke 24 uur, in een worker-thread (de stores zijn synchroon). Geen extra job, geen extra rechten — de container heeft de managed identity al. Bij meerdere replica's draait elke replica zijn eigen lus; deletes zijn idempotent, dus dat is dubbel werk, geen fout. In Table Storage snijdt de purge op `PartitionKey` (de UTC-datum), dus hij leest geen rijen om te bepalen wat weg moet.
 
 **Foutreferenties** ([`errors.py`](../src/admcms_mcp/errors.py))
 
@@ -469,7 +484,10 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `AUDIT_STORE` | – | `azure_table` (prod) | Audit-store: `azure_table` / `local` / `none` |
 | `AUDIT_TABLE_ACCOUNT_URL` / `AUDIT_TABLE_NAME` | – | `https://<account>.table.core.windows.net` / `admcmsaudit` | Doel voor `azure_table` |
 | `AUDIT_DB_PATH` | – | `data/audit.db` | Alleen bij `AUDIT_STORE=local` |
+| `AUDIT_RETENTION_DAYS` | – | `365` | Bewaartermijn audit-rijen; `0` schakelt opruimen uit |
 | `MAX_ROWS_HARD_LIMIT` | – | `5000` | Harde row-cap |
+| `MAX_CONCURRENT_QUERIES_PER_USER` | – | `3` | Gelijktijdige tool-calls per gebruiker; `0` schakelt de rem uit |
+| `QUERY_QUEUE_TIMEOUT_SECONDS` | – | `60` | Hoe lang een call op een vrije slot wacht voordat hij wordt geweigerd |
 | `AZURE_CLIENT_ID` | – | client-id van MI `CMS-MCP-id-prod` | DefaultAzureCredential kiest de user-assigned MI |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | – | uit Bicep | Telemetrie |
 
@@ -494,7 +512,8 @@ flowchart LR
 - **Runtime**: `python:3.12-slim-bookworm` + msodbcsql18, non-root `appuser` (uid 10001), `uvicorn --proxy-headers --forwarded-allow-ips='*'` op poort 8000. Container Apps: 0.5 vCPU / 1 Gi, min 1 / max 3 replicas, http-scaling.
 - **Auth naar Azure vanuit CI**: federated OIDC (`AZURE_CLIENT_ID`/`AZURE_TENANT_ID` secrets, geen wachtwoorden).
 - **Rollback**: verkeer blijft op laatste gezonde revision; `az containerapp ingress traffic set …`.
-- **Nightly restart** leegt de in-memory caches: query-cache, filter-options-cache, allowlist-cache, JWKS-cache. De audit-trail staat sinds 2026-08-19 in Table Storage en overleeft de restart.
+- **Nightly restart** leegt de in-memory caches: query-cache, filter-options-cache, allowlist-cache, JWKS-cache. De audit-trail staat sinds 2026-08-19 in Table Storage en overleeft de restart — sinds 2026-08-27 staat dat ook in de bicep, zie §11 #2.
+- **Audit-storage in infra**: storage account (`auditStorageAccountName`, default `cmsmcpauditprod39b6`), `tableServices/default` + table, en *Storage Table Data Contributor* voor de managed identity. De naam is een parameter en geen afgeleide van `resourceToken`: het account bestond al vóór het in de bicep stond, en een afgeleide naam zou een tweede account aanmaken. `assignAuditTableRole=false` slaat de roltoewijzing over als een deploy struikelt over `RoleAssignmentExists` (de bestaande toewijzing is met de hand gemaakt en heeft een andere naam).
 - **Dependabot** wekelijks (pip, docker, github-actions); dependency-ranges hebben bovengrenzen per major (mcp 2.0 verwijderde `mcp.server.fastmcp`).
 - Volledige ops-handleiding: [`docs/DEPLOYMENT.md`](DEPLOYMENT.md); testen: [`docs/TESTING.md`](TESTING.md).
 
@@ -505,16 +524,18 @@ flowchart LR
 | # | Wat | Waar | Status |
 |---|---|---|---|
 | 1 | README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`, werkelijk **25** `@mcp.tool()` (incl. `describe_server`, `health_check`, `get_filter_options`, `get_dead_stock`, `get_country_segment_matrix`). | `README.md`, `server.py` | README in deze commit bijgewerkt; `tool_count` zou dynamisch (`len(await mcp.list_tools())`) moeten worden. |
-| 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py` | **Opgelost 2026-08-19**: `AzureTableStore` geïmplementeerd, `AUDIT_STORE=azure_table` in prod. |
+| 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py`, `infra/resources.bicep` | **Opgelost 2026-08-19** in de code (`AzureTableStore`, `AUDIT_STORE=azure_table` handmatig op de container app gezet) en **2026-08-27** in de infra: de bicep zei nog `local` + `/tmp/audit.db`, dus de eerstvolgende `az deployment group create` had prod teruggezet. Storage account, table, RBAC en env staan nu in de bicep, met een test die op die drift faalt. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
 | 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
-| 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Zie ook #11 voor het geheugenaspect. |
+| 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Het geheugenaspect is opgelost, zie #11. |
 | 6 | Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING). | `docs/*.md` | Cosmetisch; bijwerken bij volgende doc-ronde. |
 | 7 | `groups`-claim: Entra stuurt bij >200 groepen géén `groups`-claim (overage). Zo'n gebruiker moet dan via `users` op de allowlist. | Entra-config | Aandachtspunt bij onboarding grote tenants. |
 | 8 | ~~`/authorize` en `/token` gaven `client_id` en `grant_type` ongefilterd door aan Entra.~~ | `oauth.py` | **Opgelost 2026-08-27**: client_id gepind op `ENTRA_APP_ID`, grant_type-allowlist. |
 | 9 | ~~Rauwe pyodbc-tekst (driver, servernaam, SQL-fragment) ging naar de client.~~ | `tools.py`, `server.py` | **Opgelost 2026-08-27**: `errors.client_error()` maskeert; volledige tekst in log + audit-entry, client krijgt een referentie. |
-| 10 | Geen rate-limiting of concurrency-rem per gebruiker; één zware `query_database` kan de server voor iedereen bezet houden. | `server.py`, `db.py` | Open — zie bevinding 4 van de review van 2026-08-27. |
-| 11 | Query-cache in `db.py` heeft geen eviction en groeit onbegrensd. | `db.py` | Open — zie bevinding 5. |
+| 10 | ~~Geen rate-limiting of concurrency-rem per gebruiker.~~ | `limits.py` | **Opgelost 2026-08-27**: max 3 gelijktijdige calls per `oid`, wachtrij van 60 s, daarna een nette weigering. Per replica in het geheugen. |
+| 11 | ~~Query-cache groeit onbegrensd.~~ | `db.py` | **Opgelost 2026-08-27**: LRU met 256 entries, verlopen entries opgeruimd bij een miss, `query_database` en de health-ping cachen niet meer. |
+| 13 | ~~Tool-handlers draaien op de event loop; een trage query bevriest de hele server en Azure herstart de container.~~ | `server.py` | **Opgelost 2026-08-27**: `_audited` is async en draait het werk via `asyncio.to_thread`. Zie §3. |
+| 12 | Nachtelijke restart (`nightly-restart.yml`) staat er als workaround; de oorzaak was nooit onderzocht. | `.github/workflows/` | Oorzaak opgelost in #13; de workflow kan weg zodra dat een tijdje draait. **Onderzocht 2026-08-27**: de container wordt overdag al door Azure herstart doordat `/healthz` niet antwoordt terwijl een trage query de event loop blokkeert (`ReplicaUnhealthy` → *failed liveness probe*, 13× op 27-08). De nachtelijke restart lost dat niet op en verbergt het. Advies: laten staan tot de event-loop-blokkade en #11 zijn opgelost, daarna verwijderen. Voor de audit is hij niet langer schadelijk nu de trail in Table Storage staat. |
 
 ---
 
@@ -542,5 +563,7 @@ Werk bovenaan de regel *"Laatst geverifieerd tegen commit …"* bij.
 
 | Datum | Commit | Wat |
 |---|---|---|
+| 2026-08-27 | (deze commit) | §3 niets blokkeert de event loop, §7 cache-LRU + concurrency-rem, §9 twee env-vars, §11 items 5, 10, 11, 13. |
+| 2026-08-27 | (deze commit) | §8 bewaartermijn + opruimlus, §9 `AUDIT_RETENTION_DAYS`, §10 audit-storage in bicep, §11 items 2 en 12. |
 | 2026-08-27 | (deze commit) | §4.2 proxy-hardening (client_id-pin, grant_type-allowlist, redirect_uri-afweging); §8 foutreferenties via `errors.py` + admin-rol rechtgezet; §11 items 8–11. |
 | 2026-08-19 | (deze commit) | Eerste versie na volledige code-analyse (auth, autorisatie, groepen, 25 tools, data-laag, audit, deploy). |

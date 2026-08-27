@@ -48,7 +48,9 @@ def _convert_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def query_database(sql: str, max_rows: int = 100) -> dict[str, Any]:
     """Execute a read-only SQL query against ADMCMS and return rows."""
     try:
-        rows = execute_query(sql, max_rows=max_rows)
+        # No caching: every free-form statement differs, so the cache would only
+        # collect keys it never gets to reuse.
+        rows = execute_query(sql, max_rows=max_rows, use_cache=False)
         return {
             "sql": sql,
             "row_count": len(rows),

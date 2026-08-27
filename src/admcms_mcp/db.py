@@ -6,6 +6,7 @@ import queue
 import re
 import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from typing import Any
@@ -80,24 +81,73 @@ _pool_lock = threading.Lock()
 # heavy aggregates means only the FIRST load per (sql, params) pays the cost and
 # every subsequent tile/refresh within the TTL is instant.
 _QUERY_CACHE_TTL_SECONDS = 600
+
+#: Hard ceiling on cached result sets. The keys are (sql, params, row cap) and
+#: the container has 1 GiB, so an unbounded dict is a slow leak that ends in an
+#: OOM kill. 256 entries covers every dashboard tile several times over; past
+#: that the least recently used one goes.
+_QUERY_CACHE_MAX_ENTRIES = 256
+
+#: The key deliberately holds no user identity. Every caller may see the same
+#: rows today, so sharing a cached result between users is correct and is what
+#: makes the cache worth having. The moment a tool starts filtering per customer
+#: this becomes a data leak — `test_cache_key_is_not_per_user` states that out
+#: loud so the next person has to change it on purpose.
 # (cached_at, rows, was_truncated)
-_query_cache: dict[tuple, tuple[float, list, bool]] = {}
+_query_cache: OrderedDict[tuple, tuple[float, list, bool]] = OrderedDict()
 _query_cache_lock = threading.Lock()
 
 
 def _cache_get(key: tuple) -> list | None:
+    now = time.monotonic()
     with _query_cache_lock:
         hit = _query_cache.get(key)
-        if hit is not None and (time.monotonic() - hit[0]) < _QUERY_CACHE_TTL_SECONDS:
-            if hit[2]:
-                _note_truncation()
-            return hit[1]
-    return None
+        if hit is None:
+            _drop_expired_locked(now)
+            return None
+        if (now - hit[0]) >= _QUERY_CACHE_TTL_SECONDS:
+            del _query_cache[key]
+            _drop_expired_locked(now)
+            return None
+        _query_cache.move_to_end(key)  # most recently used
+        if hit[2]:
+            _note_truncation()
+        return hit[1]
 
 
 def _cache_put(key: tuple, result: list, truncated: bool = False) -> None:
     with _query_cache_lock:
         _query_cache[key] = (time.monotonic(), result, truncated)
+        _query_cache.move_to_end(key)
+        while len(_query_cache) > _QUERY_CACHE_MAX_ENTRIES:
+            evicted, _ = _query_cache.popitem(last=False)
+            logger.debug("Query cache full; evicted the least recently used entry")
+
+
+def _drop_expired_locked(now: float) -> None:
+    """Remove entries past their TTL. Caller holds the lock.
+
+    Runs on a miss rather than on a timer: a miss is exactly the moment the
+    cache is being touched anyway, and it keeps a quiet server from holding
+    stale rows for as long as it stays quiet.
+    """
+    expired = [
+        k for k, (at, _, _) in _query_cache.items() if (now - at) >= _QUERY_CACHE_TTL_SECONDS
+    ]
+    for key in expired:
+        del _query_cache[key]
+
+
+def cache_size() -> int:
+    """Number of cached result sets. For tests and diagnostics."""
+    with _query_cache_lock:
+        return len(_query_cache)
+
+
+def clear_query_cache() -> None:
+    """Drop every cached result. For tests."""
+    with _query_cache_lock:
+        _query_cache.clear()
 
 
 def validate_query(sql: str) -> None:
@@ -202,8 +252,14 @@ def _borrow():
         _release(conn, healthy=healthy)
 
 
-def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
-    """Validate and execute a read-only SQL query; return rows as dicts."""
+def execute_query(sql: str, max_rows: int = 100, use_cache: bool = True) -> list[dict[str, Any]]:
+    """Validate and execute a read-only SQL query; return rows as dicts.
+
+    `use_cache=False` for queries whose whole point is to be fresh: free-form
+    SQL (every statement is different, so caching only costs memory) and the
+    health probe (a cached `SELECT 1` would report a healthy database for ten
+    minutes after it went down).
+    """
 
     from admcms_mcp import audit as _audit
 
@@ -211,9 +267,10 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
     effective_rows = min(max(1, max_rows), _MAX_ROWS_HARD_LIMIT)
 
     cache_key = (sql, None, effective_rows)
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
+    if use_cache:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
 
     _start = time.monotonic()
     with _borrow() as conn:
@@ -229,7 +286,8 @@ def execute_query(sql: str, max_rows: int = 100) -> list[dict[str, Any]]:
         _note_truncation()
     result = [dict(zip(columns, row, strict=False)) for row in rows]
     _audit.record_sql(sql, None, int((time.monotonic() - _start) * 1000), len(result))
-    _cache_put(cache_key, result, truncated)
+    if use_cache:
+        _cache_put(cache_key, result, truncated)
     return result
 
 

@@ -15,7 +15,7 @@ class TestQueryDatabase:
         assert result["rows"] == [{"id": 1}, {"id": 2}]
         assert result["row_count"] == 2
         assert "sql" in result
-        mock_execute.assert_called_once_with("SELECT id FROM foo", max_rows=10)
+        mock_execute.assert_called_once_with("SELECT id FROM foo", max_rows=10, use_cache=False)
 
     @patch("admcms_mcp.tools.execute_query")
     def test_returns_error_for_invalid_sql(self, mock_execute):

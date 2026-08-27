@@ -5,6 +5,7 @@ Implements the OAuth 2.1 Resource Server pattern from MCP spec 2025-03-26.
 
 import json
 import logging
+import threading
 import time
 from typing import Any
 
@@ -30,18 +31,35 @@ _JWKS_URL = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
 _JWKS_CACHE: dict[str, Any] = {"keys": None, "fetched_at": 0.0}
 _JWKS_TTL_SECONDS = 24 * 3600
 
+#: Single-flight guard. Validation runs in a worker thread (see
+#: `EntraAuthMiddleware`), so a burst of requests arriving on a cold or expired
+#: cache would otherwise each fire their own fetch. The first one through the
+#: lock does the work; the rest find it cached and walk on.
+_JWKS_LOCK = threading.Lock()
+
 
 def _fetch_jwks_raw() -> list[dict[str, Any]]:
-    now = time.time()
-    cached = _JWKS_CACHE.get("keys")
-    if cached and now - _JWKS_CACHE["fetched_at"] < _JWKS_TTL_SECONDS:
+    cached = _fresh_jwks()
+    if cached is not None:
         return cached
-    response = httpx.get(_JWKS_URL, timeout=10)
-    response.raise_for_status()
-    keys = response.json().get("keys", [])
-    _JWKS_CACHE["keys"] = keys
-    _JWKS_CACHE["fetched_at"] = now
-    return keys
+    with _JWKS_LOCK:
+        # Re-check: another thread may have filled the cache while we waited.
+        cached = _fresh_jwks()
+        if cached is not None:
+            return cached
+        response = httpx.get(_JWKS_URL, timeout=10)
+        response.raise_for_status()
+        keys = response.json().get("keys", [])
+        _JWKS_CACHE["keys"] = keys
+        _JWKS_CACHE["fetched_at"] = time.time()
+        return keys
+
+
+def _fresh_jwks() -> list[dict[str, Any]] | None:
+    cached = _JWKS_CACHE.get("keys")
+    if cached and time.time() - _JWKS_CACHE["fetched_at"] < _JWKS_TTL_SECONDS:
+        return cached
+    return None
 
 
 def _get_key_for_kid(kid: str) -> Any:
@@ -121,12 +139,32 @@ def validate_jwt(token: str) -> dict[str, Any]:
 _ALLOWLIST_CACHE: dict[str, Any] = {"data": None, "fetched_at": 0.0}
 _ALLOWLIST_TTL_SECONDS = 300
 
+#: Same single-flight reasoning as the JWKS lock, and it bites harder here: the
+#: TTL is five minutes, so without it every burst that lands on an expired
+#: cache sends one Key Vault call per request.
+_ALLOWLIST_LOCK = threading.Lock()
+
 
 def _load_allowlist() -> dict[str, list[str]]:
-    now = time.time()
-    cached = _ALLOWLIST_CACHE.get("data")
-    if cached and now - _ALLOWLIST_CACHE["fetched_at"] < _ALLOWLIST_TTL_SECONDS:
+    cached = _fresh_allowlist()
+    if cached is not None:
         return cached
+    with _ALLOWLIST_LOCK:
+        cached = _fresh_allowlist()
+        if cached is not None:
+            return cached
+        return _refresh_allowlist()
+
+
+def _fresh_allowlist() -> dict[str, list[str]] | None:
+    cached = _ALLOWLIST_CACHE.get("data")
+    if cached and time.time() - _ALLOWLIST_CACHE["fetched_at"] < _ALLOWLIST_TTL_SECONDS:
+        return cached
+    return None
+
+
+def _refresh_allowlist() -> dict[str, list[str]]:
+    now = time.time()
     raw = get_secret("admcms-allowlist")
     data = json.loads(raw) if raw else {"users": [], "groups": []}
     data.setdefault("users", [])
