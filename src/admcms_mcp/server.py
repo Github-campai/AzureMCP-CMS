@@ -17,6 +17,7 @@ from datetime import UTC
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import Tool as MCPTool
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -48,6 +49,16 @@ from admcms_mcp.limits import ConcurrencyLimitReached, limiter
 from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
 from admcms_mcp.oauth import build_oauth_routes, protected_resource_metadata_url
 from admcms_mcp.query_helpers import mark_external_rows
+from admcms_mcp.roles import (
+    KNOWN_ROLES,
+    ROLE_ADMIN,
+    RoleDenied,
+    can_call,
+    current_roles,
+    enforcement,
+    require_tool,
+    roles_from_claims,
+)
 from admcms_mcp.schema import SCHEMA_KNOWLEDGE
 from admcms_mcp.tools import detect_price_anomalies as _detect_price_anomalies
 from admcms_mcp.tools import get_country_segment_matrix as _get_country_segment_matrix
@@ -128,6 +139,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
                 request.state.user_claims = {"oid": "local-dev", "upn": "dev@localhost"}
                 current_user.set("dev@localhost")
                 current_subject.set("local-dev")
+                current_roles.set(_dev_roles(settings))
                 return await call_next(request)
 
             auth_header = request.headers.get("authorization", "")
@@ -170,6 +182,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             request.state.user_claims = claims
             current_user.set(claims.get("upn") or claims.get("oid") or "authenticated")
             current_subject.set(claims.get("oid") or claims.get("upn") or "authenticated")
+            current_roles.set(roles_from_claims(claims))
             return await call_next(request)
         except Exception:
             # Fail closed on any unexpected error — never pass-through to MCP.
@@ -196,6 +209,12 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
 
 
 _HEADER_UNSAFE_CHARS = str.maketrans({'"': "", "\r": "", "\n": ""})
+
+
+def _dev_roles(settings) -> frozenset[str]:  # noqa: ANN001 — Settings, avoids an import cycle
+    """Roles assumed when AUTH_DISABLED is on, from DEV_ROLES. Local only."""
+    names = {r.strip().lower() for r in settings.dev_roles.split(",") if r.strip()}
+    return frozenset(names & KNOWN_ROLES) or frozenset({ROLE_ADMIN})
 
 
 def _sanitize(detail: str) -> str:
@@ -395,6 +414,14 @@ async def _audited(tool_name: str, args: dict, call):
     ContextVars (the audit entry, `current_user`) are copied into the worker
     thread by asyncio, so auditing keeps working unchanged.
     """
+    try:
+        require_tool(tool_name)
+    except RoleDenied as e:
+        refusal = {"data": [], "summary": None, "error": str(e)}
+        # Audited like any other outcome: a refusal is exactly the kind of thing
+        # you want to find back when someone says "it says I can't".
+        return await asyncio.to_thread(_audited_sync, tool_name, args, lambda: refusal)
+
     subject = current_subject.get()
     try:
         async with limiter.slot(subject, tool_name=tool_name):
@@ -404,6 +431,21 @@ async def _audited(tool_name: str, args: dict, call):
         # Audited like any other outcome, so a user hitting the ceiling is
         # visible in /admin/audit instead of only in the logs.
         return await asyncio.to_thread(_audited_sync, tool_name, args, lambda: refusal)
+
+
+class RoleFilteredMCP(FastMCP):
+    """FastMCP that only advertises the tools the caller's role allows.
+
+    `tools/list` is answered per request, so a finance user never sees the IT
+    tools in the first place — and `describe_server` follows without any change,
+    because it reads the same list. `_audited` still refuses the call itself.
+    """
+
+    async def list_tools(self) -> list[MCPTool]:
+        tools = await super().list_tools()
+        if enforcement() != "enforce":
+            return tools
+        return [tool for tool in tools if can_call(tool.name)]
 
 
 def _build_mcp_server() -> FastMCP:
@@ -427,7 +469,7 @@ def _build_mcp_server() -> FastMCP:
     except Exception:
         _public_base = ""
 
-    mcp = FastMCP(
+    mcp = RoleFilteredMCP(
         "admcms-mcp",
         instructions=SERVER_INSTRUCTIONS,
         stateless_http=True,
@@ -1234,6 +1276,17 @@ def _build_mcp_server() -> FastMCP:
                     "Microsoft Entra ID (OAuth 2.1). Toegang vereist een tenant uit de "
                     "toegestane lijst plus lidmaatschap van de allowlist-groep; "
                     "Entra-adminrechten geven op zichzelf geen toegang."
+                ),
+                # Zonder dit weet niemand waarom een tool ontbreekt: de lijst is
+                # per rol gefilterd, dus "hij bestaat niet" en "hij is niet voor
+                # jou" zien er van buiten hetzelfde uit.
+                "rollen": sorted(current_roles.get()) or ["geen rol toegewezen"],
+                "rollen_toelichting": (
+                    "Je rol komt uit de app-roles van Entra en bepaalt welke tools je "
+                    "hierboven ziet. Mis je er een, vraag dan een beheerder om de "
+                    "bijbehorende rol; de lijst hierboven is al op jouw rol gefilterd."
+                    if enforcement() == "enforce"
+                    else "Rolcontrole staat nog niet aan; je ziet alle tools."
                 ),
             },
             "tools": beschreven,

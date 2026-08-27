@@ -53,7 +53,7 @@ Lid maken (CMS-zijde): CMS IT-admin in hun eigen Entra portal — zie [`docs/ONB
 ## Wat doet dit?
 
 23 read-only datatools op de ADMCMS database (Azure SQL `cmsnl`), plus
-`describe_server` en `health_check` (25 tools totaal). Voorbeelden van vragen die een AI-assistent kan
+`describe_server` en `health_check` (25 tools totaal). Welke daarvan je ziet hangt af van je rol — zie [Rollen](#rollen). Voorbeelden van vragen die een AI-assistent kan
 beantwoorden:
 
 - "Wat zijn onze top 10 klanten dit jaar versus vorig jaar?"
@@ -83,6 +83,29 @@ Allemaal SELECT-only, parameterized, met SQL identifier validation en audit log.
 Volledige beschrijvingen (doel, args, tabellen, filters, paginatie) in
 [`docs/ARCHITECTUUR.md`](docs/ARCHITECTUUR.md#6-tools--wat-er-is-en-wat-ze-doen), live via `/admin/tools`
 (Bearer JWT vereist) of in [`docs/DATABASE-KENNIS/ADMCMS_Query_Cookbook.md`](docs/DATABASE-KENNIS/ADMCMS_Query_Cookbook.md).
+
+## Rollen
+
+De allowlist bepaalt *of* je binnenkomt, je rol bepaalt *wat* je mag vragen.
+
+| Rol | Krijgt bovenop de basis |
+|---|---|
+| `finance` | omzet, marge, KPI's, klanten, kosten, kortingen, betaalmethoden, inkoop |
+| `sales` | omzet, top-klanten, orders, voorraad, kanaalmix, salesrep |
+| `it` | `query_database`, `detect_price_anomalies`, voorraad, orders |
+| `viewer` | voorraad |
+| `admin` | alles |
+
+Basis voor iedereen: `describe_server`, `health_check`, `get_schema`, `get_lookups`,
+`search_products`, `get_filter_options`. Meerdere rollen tellen op.
+
+De rol komt uit de app roles van Entra (`admcms.finance`, `admcms.it`, …). Wat je niet mag
+zie je ook niet in de toolslijst staan, en `describe_server` vertelt je welke rollen je hebt.
+
+**Staat nu op `ROLE_ENFORCEMENT=warn`**: er wordt nog niets geweigerd, alleen gelogd, tot de
+app roles zijn toegewezen. Uitrolstappen in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#app-roles-toewijzen-rollen-per-tool);
+het ontwerp in [`docs/ARCHITECTUUR.md`](docs/ARCHITECTUUR.md#52d-rollen-per-tool).
 
 ## Endpoints
 
@@ -135,7 +158,7 @@ uvicorn admcms_mcp.server:app --port 8000
 
 Test: `curl http://localhost:8000/healthz`.
 
-Tests: `pytest -v --cov=admcms_mcp` (443 tests). Lint: `ruff check . && ruff format --check .`
+Tests: `pytest -v --cov=admcms_mcp` (475 tests). Lint: `ruff check . && ruff format --check .`
 Beide draaien in CI (`.github/workflows/ci.yml`) op elke push en PR.
 
 ## CI/CD

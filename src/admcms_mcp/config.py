@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     # "*" om terug te vallen op het oude gedrag als een browserclient breekt.
     cors_allow_origins: list[str] = []
 
+    # Rollen per tool (zie roles.py). De rol komt uit de app-roles van Entra.
+    role_claim: str = "roles"
+    role_default: str = "viewer"
+    # "off" | "warn" (alleen loggen, stand tijdens de uitrol) | "enforce"
+    role_enforcement: str = "warn"
+    # Rollen die gelden bij AUTH_DISABLED=true (alleen lokaal), komma-gescheiden.
+    dev_roles: str = "admin"
+
     # Database connection (non-secret parts; password comes from Key Vault)
     admcms_server: str = "cmsnl.database.windows.net"
     admcms_database: str = "ADMCMS-PRODUCTION-REPL01"

@@ -8,6 +8,56 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — Rollen per tool
+
+Tot nu toe kende de server één soort gebruiker: wie op de allowlist stond mocht
+alles. Een financieel manager kon vrije SQL draaien en een IT-manager kon de
+marges opvragen — niet omdat dat de bedoeling was, maar omdat er geen onderscheid
+bestond.
+
+Vijf rollen, in [`roles.py`](src/admcms_mcp/roles.py):
+
+| Rol | Krijgt bovenop de basis |
+|---|---|
+| `finance` | omzet, marge, KPI's, klanten, kosten, kortingen, betaalmethoden, inkoop |
+| `sales` | omzet, top-klanten, orders, voorraad, kanaalmix, salesrep |
+| `it` | `query_database`, `detect_price_anomalies`, voorraad, orders |
+| `viewer` | voorraad |
+| `admin` | alles |
+
+`describe_server`, `health_check`, `get_schema`, `get_lookups`,
+`search_products` en `get_filter_options` zitten in elke rol: drie beschrijven de
+server in plaats van de business, de andere drie heb je nodig voordat je een
+zinnige vraag kunt stellen. Meerdere rollen tellen op.
+
+**Waar de rol vandaan komt.** Uit de `roles`-claim van het token, gevuld door de
+app roles in de app-registratie. Bewust niet uit groepslidmaatschap: boven ~200
+groepen laat Entra de `groups`-claim weg en zou iemand stilzwijgend zijn rol
+kwijtraken. `admcms.invoke` staat in dezelfde claim maar is geen rol en wordt
+genegeerd.
+
+**Twee plekken handhaven.** `tools/list` verbergt wat je niet mag — en
+`describe_server` volgt vanzelf, want dat leest dezelfde lijst — en `_audited`
+weigert de aanroep zelf, met de weigering in het audit-log. Verbergen is geen
+autorisatie; de tweede check is dat wel.
+
+**Staat op `warn`.** Er wordt nog niets geweigerd, alleen gelogd. Dat is met
+opzet: eerst de app roles toewijzen in Entra, dan de logs lezen, dan
+`ROLE_ENFORCEMENT=enforce`. Andersom sluit één vergeten toewijzing iedereen
+tegelijk buiten. De stappen staan in `docs/DEPLOYMENT.md`.
+
+`/admin/*` valt hier niet onder; dat blijft op de `admins`-sectie van de
+allowlist lopen. Eén mechanisme per beslissing.
+
+`describe_server` vertelt de gebruiker nu ook welke rollen hij heeft — zonder dat
+is "die tool bestaat niet" niet te onderscheiden van "die tool is niet voor jou".
+
+Tests: 32 nieuwe, waaronder twee die de tabel eerlijk houden — elke tool in een
+rol moet bestaan, en elke geregistreerde tool moet in minstens één rol zitten.
+Vergeet je dat bij een nieuwe tool, dan faalt de suite.
+
+---
+
 ## 2026-08-27 — Opruiming: `CAMPAI_ALLOWED_GROUP` weg
 
 Een tweede manier om dezelfde beslissing te nemen: naast de allowlist in Key
