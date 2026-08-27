@@ -133,6 +133,16 @@ flowchart TD
 
 ## 3. Request-flow door de server
 
+> **Niets blokkeert de event loop.** De auth-middleware draait `validate_jwt`,
+> `check_access` en `check_admin_access` via `asyncio.to_thread` (JWKS-fetch en
+> Key Vault zijn synchroon, en de allowlist-cache verloopt elke 5 minuten), en
+> `_audited` draait elke tool-handler via `asyncio.to_thread`. Dat laatste is
+> geen optimalisatie maar de reden dat de container blijft draaien: de MCP SDK
+> roept een synchrone tool-functie rechtstreeks op de loop aan, en een query van
+> 180 seconden liet `/healthz` stilvallen — waarna Azure's liveness-probe de
+> container neerhaalde en iedereen zijn verbinding verloor.
+
+
 Middleware-volgorde in [`build_app()`](../src/admcms_mcp/server.py) (buitenste eerst):
 
 1. **CORSMiddleware** — `allow_origins=["*"]`, exposeert `WWW-Authenticate`, `Mcp-Session-Id`, `Mcp-Protocol-Version` (nodig voor browser-clients en de admin-UI). Staat buiten auth zodat preflight-OPTIONS niet 401't.
@@ -412,8 +422,9 @@ Alles in [`db.py`](../src/admcms_mcp/db.py).
 | `validate_query(sql)` | Eerste token moet `SELECT` of `WITH` zijn (leidende `(` toegestaan); daarna regex-blacklist op hele tekst: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, EXEC(UTE), MERGE, GRANT, REVOKE → `ValueError`. |
 | Identifiers | `get_lookups`/`get_distinct_values`: tabel/kolom moeten matchen `^[A-Za-z_][A-Za-z0-9_]{0,127}$` en worden `[…]`-gequote. Waarden altijd via `?`-parameters. |
 | Verbinding | `pyodbc`, ODBC Driver 18, `Encrypt=yes`, `autocommit=True` (geen open transacties/locks), connect-timeout 30 s, **query-timeout 180 s**. Credentials `admcms-db-username`/`-password` uit Key Vault (1× per nieuwe verbinding). |
-| Pool | Max **8** verbindingen (`_POOL_MAX`); dode verbinding wordt transparant vervangen (`SELECT 1`-ping bij uitlenen); verbinding met DB-fout wordt weggegooid. Nodig omdat FastMCP sync-tools in een threadpool draait en dashboard-tegels parallel komen. |
-| Result-cache | In-process, key `(sql, params, effective_rows)`, TTL **600 s**. Truncation-status wordt mee-gecachet. Geen invalidatie — nightly restart leegt hem. |
+| Pool | Max **8** verbindingen (`_POOL_MAX`); dode verbinding wordt transparant vervangen (`SELECT 1`-ping bij uitlenen); verbinding met DB-fout wordt weggegooid. Nodig omdat tool-handlers sinds 2026-08-27 in een worker-thread draaien (zie §3) en dashboard-tegels parallel komen. |
+| Result-cache | In-process, key `(sql, params, effective_rows)`, TTL **600 s**, **LRU met max 256 entries**. Truncation-status wordt mee-gecachet. Verlopen entries gaan eruit bij een miss; daarboven verdwijnt de minst recent gebruikte. `use_cache=False` voor `query_database` (elke vrije query is uniek, cachen levert alleen sleutels op) en voor de `SELECT 1` van `health_check` (een gecachete ping meldt tien minuten lang een gezonde database die al plat ligt). **De sleutel bevat bewust geen gebruiker**: iedereen mag vandaag dezelfde rijen zien, en dat delen is precies wat de cache oplevert. Zodra een tool per klant gaat filteren moet de sleutel een subject krijgen — `tests/test_query_cache.py::test_cache_key_is_not_per_user` legt dat vast. |
+| Concurrency per gebruiker | Max **3** gelijktijdige tool-calls per `oid` ([`limits.py`](../src/admcms_mcp/limits.py), `MAX_CONCURRENT_QUERIES_PER_USER`, `0` = uit). Boven de limiet wacht een call tot **60 s** (`QUERY_QUEUE_TIMEOUT_SECONDS`) — dashboard-tegels komen legitiem tegelijk binnen en horen te wachten, niet te falen — en krijgt daarna een leesbare weigering die ook in de audit belandt. Staat per replica in het geheugen; met `maxReplicas: 3` is de feitelijke bovengrens dus hoger. Een teller per minuut is bewust *niet* toegevoegd: het probleem is queryduur, niet frequentie. |
 | Row-cap | `max_rows` geclampt naar 1..`MAX_ROWS_HARD_LIMIT` (env, default **5000**). `fetchmany(n+1)` om afkapping te detecteren → `_note_truncation()` (ContextVar per tool-call). |
 | Truncation-signaal | `server._audited` zet `truncated: true` + `truncated_hint` op de response. `describe_server` legt dit uit aan de LLM. |
 | Audit-koppeling | Elke uitgevoerde query wordt via `audit.record_sql(sql, params, duration_ms, row_count)` aan de actieve audit-entry gehangen. |
@@ -475,6 +486,8 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `AUDIT_DB_PATH` | – | `data/audit.db` | Alleen bij `AUDIT_STORE=local` |
 | `AUDIT_RETENTION_DAYS` | – | `365` | Bewaartermijn audit-rijen; `0` schakelt opruimen uit |
 | `MAX_ROWS_HARD_LIMIT` | – | `5000` | Harde row-cap |
+| `MAX_CONCURRENT_QUERIES_PER_USER` | – | `3` | Gelijktijdige tool-calls per gebruiker; `0` schakelt de rem uit |
+| `QUERY_QUEUE_TIMEOUT_SECONDS` | – | `60` | Hoe lang een call op een vrije slot wacht voordat hij wordt geweigerd |
 | `AZURE_CLIENT_ID` | – | client-id van MI `CMS-MCP-id-prod` | DefaultAzureCredential kiest de user-assigned MI |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | – | uit Bicep | Telemetrie |
 
@@ -514,14 +527,15 @@ flowchart LR
 | 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py`, `infra/resources.bicep` | **Opgelost 2026-08-19** in de code (`AzureTableStore`, `AUDIT_STORE=azure_table` handmatig op de container app gezet) en **2026-08-27** in de infra: de bicep zei nog `local` + `/tmp/audit.db`, dus de eerstvolgende `az deployment group create` had prod teruggezet. Storage account, table, RBAC en env staan nu in de bicep, met een test die op die drift faalt. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
 | 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
-| 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Zie ook #11 voor het geheugenaspect. |
+| 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Het geheugenaspect is opgelost, zie #11. |
 | 6 | Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING). | `docs/*.md` | Cosmetisch; bijwerken bij volgende doc-ronde. |
 | 7 | `groups`-claim: Entra stuurt bij >200 groepen géén `groups`-claim (overage). Zo'n gebruiker moet dan via `users` op de allowlist. | Entra-config | Aandachtspunt bij onboarding grote tenants. |
 | 8 | ~~`/authorize` en `/token` gaven `client_id` en `grant_type` ongefilterd door aan Entra.~~ | `oauth.py` | **Opgelost 2026-08-27**: client_id gepind op `ENTRA_APP_ID`, grant_type-allowlist. |
 | 9 | ~~Rauwe pyodbc-tekst (driver, servernaam, SQL-fragment) ging naar de client.~~ | `tools.py`, `server.py` | **Opgelost 2026-08-27**: `errors.client_error()` maskeert; volledige tekst in log + audit-entry, client krijgt een referentie. |
-| 10 | Geen rate-limiting of concurrency-rem per gebruiker; één zware `query_database` kan de server voor iedereen bezet houden. | `server.py`, `db.py` | Open — zie bevinding 4 van de review van 2026-08-27. |
-| 11 | Query-cache in `db.py` heeft geen eviction en groeit onbegrensd. | `db.py` | Open — zie bevinding 5. |
-| 12 | Nachtelijke restart (`nightly-restart.yml`) staat er als workaround; de oorzaak was nooit onderzocht. | `.github/workflows/` | **Onderzocht 2026-08-27**: de container wordt overdag al door Azure herstart doordat `/healthz` niet antwoordt terwijl een trage query de event loop blokkeert (`ReplicaUnhealthy` → *failed liveness probe*, 13× op 27-08). De nachtelijke restart lost dat niet op en verbergt het. Advies: laten staan tot de event-loop-blokkade en #11 zijn opgelost, daarna verwijderen. Voor de audit is hij niet langer schadelijk nu de trail in Table Storage staat. |
+| 10 | ~~Geen rate-limiting of concurrency-rem per gebruiker.~~ | `limits.py` | **Opgelost 2026-08-27**: max 3 gelijktijdige calls per `oid`, wachtrij van 60 s, daarna een nette weigering. Per replica in het geheugen. |
+| 11 | ~~Query-cache groeit onbegrensd.~~ | `db.py` | **Opgelost 2026-08-27**: LRU met 256 entries, verlopen entries opgeruimd bij een miss, `query_database` en de health-ping cachen niet meer. |
+| 13 | ~~Tool-handlers draaien op de event loop; een trage query bevriest de hele server en Azure herstart de container.~~ | `server.py` | **Opgelost 2026-08-27**: `_audited` is async en draait het werk via `asyncio.to_thread`. Zie §3. |
+| 12 | Nachtelijke restart (`nightly-restart.yml`) staat er als workaround; de oorzaak was nooit onderzocht. | `.github/workflows/` | Oorzaak opgelost in #13; de workflow kan weg zodra dat een tijdje draait. **Onderzocht 2026-08-27**: de container wordt overdag al door Azure herstart doordat `/healthz` niet antwoordt terwijl een trage query de event loop blokkeert (`ReplicaUnhealthy` → *failed liveness probe*, 13× op 27-08). De nachtelijke restart lost dat niet op en verbergt het. Advies: laten staan tot de event-loop-blokkade en #11 zijn opgelost, daarna verwijderen. Voor de audit is hij niet langer schadelijk nu de trail in Table Storage staat. |
 
 ---
 
@@ -549,6 +563,7 @@ Werk bovenaan de regel *"Laatst geverifieerd tegen commit …"* bij.
 
 | Datum | Commit | Wat |
 |---|---|---|
+| 2026-08-27 | (deze commit) | §3 niets blokkeert de event loop, §7 cache-LRU + concurrency-rem, §9 twee env-vars, §11 items 5, 10, 11, 13. |
 | 2026-08-27 | (deze commit) | §8 bewaartermijn + opruimlus, §9 `AUDIT_RETENTION_DAYS`, §10 audit-storage in bicep, §11 items 2 en 12. |
 | 2026-08-27 | (deze commit) | §4.2 proxy-hardening (client_id-pin, grant_type-allowlist, redirect_uri-afweging); §8 foutreferenties via `errors.py` + admin-rol rechtgezet; §11 items 8–11. |
 | 2026-08-19 | (deze commit) | Eerste versie na volledige code-analyse (auth, autorisatie, groepen, 25 tools, data-laag, audit, deploy). |

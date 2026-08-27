@@ -35,6 +35,13 @@ _current_entry: contextvars.ContextVar[AuditEntry | None] = contextvars.ContextV
 )
 
 # ContextVar for current user identity (set by auth middleware)
+#: Stable identity of the caller (Entra `oid`), used to key the per-user
+#: concurrency limit. Separate from `current_user`, which holds the UPN because
+#: that is what a human reading the audit log wants to see.
+current_subject: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "admcms_mcp_current_subject", default="anonymous"
+)
+
 current_user: contextvars.ContextVar[str] = contextvars.ContextVar(
     "admcms_mcp_current_user", default="unknown"
 )

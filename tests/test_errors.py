@@ -94,7 +94,7 @@ class TestEndToEnd:
         from admcms_mcp.tools import search_products
 
         mock_execute.side_effect = pyodbc.Error(PYODBC_LEAK)
-        result = _audited(
+        result = await _audited(
             "search_products", {"search_term": "filter"}, lambda: search_products("filter")
         )
 
