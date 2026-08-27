@@ -8,6 +8,140 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — Rollen per tool
+
+Tot nu toe kende de server één soort gebruiker: wie op de allowlist stond mocht
+alles. Een financieel manager kon vrije SQL draaien en een IT-manager kon de
+marges opvragen — niet omdat dat de bedoeling was, maar omdat er geen onderscheid
+bestond.
+
+Vijf rollen, in [`roles.py`](src/admcms_mcp/roles.py):
+
+| Rol | Krijgt bovenop de basis |
+|---|---|
+| `finance` | omzet, marge, KPI's, klanten, kosten, kortingen, betaalmethoden, inkoop |
+| `sales` | omzet, top-klanten, orders, voorraad, kanaalmix, salesrep |
+| `it` | `query_database`, `detect_price_anomalies`, voorraad, orders |
+| `viewer` | voorraad |
+| `admin` | alles |
+
+`describe_server`, `health_check`, `get_schema`, `get_lookups`,
+`search_products` en `get_filter_options` zitten in elke rol: drie beschrijven de
+server in plaats van de business, de andere drie heb je nodig voordat je een
+zinnige vraag kunt stellen. Meerdere rollen tellen op.
+
+**Waar de rol vandaan komt.** Uit de `roles`-claim van het token, gevuld door de
+app roles in de app-registratie. Bewust niet uit groepslidmaatschap: boven ~200
+groepen laat Entra de `groups`-claim weg en zou iemand stilzwijgend zijn rol
+kwijtraken. `admcms.invoke` staat in dezelfde claim maar is geen rol en wordt
+genegeerd.
+
+**Twee plekken handhaven.** `tools/list` verbergt wat je niet mag — en
+`describe_server` volgt vanzelf, want dat leest dezelfde lijst — en `_audited`
+weigert de aanroep zelf, met de weigering in het audit-log. Verbergen is geen
+autorisatie; de tweede check is dat wel.
+
+**Staat op `warn`.** Er wordt nog niets geweigerd, alleen gelogd. Dat is met
+opzet: eerst de app roles toewijzen in Entra, dan de logs lezen, dan
+`ROLE_ENFORCEMENT=enforce`. Andersom sluit één vergeten toewijzing iedereen
+tegelijk buiten. De stappen staan in `docs/DEPLOYMENT.md`.
+
+`/admin/*` valt hier niet onder; dat blijft op de `admins`-sectie van de
+allowlist lopen. Eén mechanisme per beslissing.
+
+`describe_server` vertelt de gebruiker nu ook welke rollen hij heeft — zonder dat
+is "die tool bestaat niet" niet te onderscheiden van "die tool is niet voor jou".
+
+Tests: 32 nieuwe, waaronder twee die de tabel eerlijk houden — elke tool in een
+rol moet bestaan, en elke geregistreerde tool moet in minstens één rol zitten.
+Vergeet je dat bij een nieuwe tool, dan faalt de suite.
+
+---
+
+## 2026-08-27 — Opruiming: `CAMPAI_ALLOWED_GROUP` weg
+
+Een tweede manier om dezelfde beslissing te nemen: naast de allowlist in Key
+Vault kon één Entra-groep via de env-var `CAMPAI_ALLOWED_GROUP` rechtstreeks
+toegang geven. Die variabele stond niet in de bicep en is in productie nooit
+gezet, dus het pad werd nooit doorlopen — de Campai-groep komt gewoon binnen via
+de `groups`-lijst van de allowlist.
+
+Weg dus. Het scheelt een tweede plek om te kijken als iemands toegang niet klopt.
+Omdat de env-var nergens gezet is, verandert er in productie niets: de conditie
+begon met `settings.campai_allowed_group and …` en die was altijd leeg.
+
+De test die het oude pad afdekte toetst nu de route die werkelijk gebruikt
+wordt (groep in de allowlist), en er is een test bij die vaststelt dat het
+zetten van `CAMPAI_ALLOWED_GROUP` niets meer doet.
+
+---
+
+## 2026-08-27 — Hardening ronde 4: injectie, groepen, CORS, SQL-check en opruiming
+
+### Databasetekst ging ongemarkeerd naar het model
+
+Een productomschrijving of klantnaam in ADMCMS is door een mens ingetypt, en een
+model dat zo'n veld leest kan er een instructie in vinden. Tools gaven die
+tekst als kale JSON terug, en de server gaf helemaal geen `instructions=` mee.
+
+`server._audited` markeert nu de vrije-tekstkolommen (`Searchname`,
+`Description`) van elke `data`- en `rows`-lijst met `⟦extern⟧…⟦/extern⟧`, en de
+server-instructions leggen uit dat wat daartussen staat gegevens zijn en nooit
+een opdracht. De formulering is overgenomen van de Campai Securitech-MCP, zodat
+een client die met beide praat één afspraak leert in plaats van twee.
+
+Bewust kort gehouden: codes, datums, bedragen en magazijnletters kunnen geen zin
+bevatten, en waarden die bedoeld zijn om terug te geven aan een tool
+(`get_lookups`, `get_filter_options`) worden níét gemarkeerd — een gemarkeerde
+filterwaarde matcht nergens meer op.
+
+### Een gebruiker in te veel groepen viel stil om
+
+Boven ~200 groepslidmaatschappen laat Entra de `groups`-claim weg. Zo iemand
+kwam alleen nog via de user-lijst binnen, en een beheerder die zijn toegang aan
+een groep ontleende werd geweigerd met "User not on allowlist" — een melding die
+niets uitlegt. De overage wordt nu herkend (`_claim_names` / `hasgroups`),
+gelogd, en de weigering zegt wat er aan de hand is en hoe het op te lossen.
+Ook opgeschreven in `docs/ONBOARDING-CUSTOMER.md`, want dit gaat bij een grote
+klanttenant een keer gebeuren.
+
+### CORS stond op `*`
+
+Elke website kon `/admin` en `/mcp` vanuit de browser van een bezoeker
+aanroepen. Er is geen cookie, dus een aanvaller heeft nog steeds een bearer
+token nodig — maar een token dat in JavaScript belandt hoort niet ook nog
+toestemming te krijgen om overal vandaan gebruikt te worden. Nu: de eigen
+hostnames plus `null` (de admin-UI over `file://`). `CORS_ALLOW_ORIGINS=*` zet
+het oude gedrag terug als een browserclient er toch over valt; lokaal zonder
+`PUBLIC_BASE_URL` blijft het `*`.
+
+### `validate_query` weigerde data en liet structuur door
+
+Twee kanten van dezelfde fout: `;` werd niet geweigerd (stacked statements
+werden alleen indirect gevangen), terwijl een legitieme query met "update" in
+een stringliteral juist wél sneuvelde — zonder dat de melding uitlegde waarom.
+
+Nu wordt de check gedaan op de query met de inhoud van `'…'`-literals
+leeggemaakt: een product dat "update kit" heet is geen UPDATE-statement, en
+`;` mag alleen nog de query afsluiten. De foutmeldingen zeggen wat er geweigerd
+is en hoe het wél kan, en `ARCHITECTUUR.md` §7 legt vast dat de databaserechten
+(`db_datareader`) de primaire waarborg zijn en deze check de tweede laag.
+
+### Opruiming
+
+- `health_check.tool_count` stond hardcoded op 23 terwijl er 25 tools zijn. Het
+  is nu `len(await mcp.list_tools())`, dus het kan niet meer uit de pas lopen.
+- Test-aantallen gelijkgetrokken: README zei 279, CLAUDE.md 357. Het zijn er
+  442. `docs/TESTING.md` zei 21 tools, dat zijn er 25.
+- `keyvault._env_override` liet secrets uit de omgeving komen, ook in
+  productie. Nu achter `ALLOW_ENV_SECRETS` (default uit); productie zet geen van
+  die variabelen, dus daar verandert er niets.
+
+Tests: 27 nieuwe (`tests/test_hardening_small.py`, uitbreiding van
+`tests/test_db_validator.py`).
+
+---
+
 ## 2026-08-27 — Hardening ronde 3: weerbaarheid
 
 ### De server bevroor bij elke zware vraag — en Azure herstartte hem daarom

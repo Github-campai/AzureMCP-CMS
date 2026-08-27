@@ -19,7 +19,7 @@
 2. [Repo- en modulestructuur](#2-repo--en-modulestructuur)
 3. [Request-flow door de server](#3-request-flow-door-de-server)
 4. [Authenticatie — OAuth 2.1 met Entra ID](#4-authenticatie--oauth-21-met-entra-id)
-5. [Autorisatie — tenants, groepen en allowlist](#5-autorisatie--tenants-groepen-en-allowlist)
+5. [Autorisatie — tenants, allowlist en rollen](#5-autorisatie--tenants-allowlist-en-rollen)
 6. [Tools — wat er is en wat ze doen](#6-tools--wat-er-is-en-wat-ze-doen)
 7. [Data-laag — SQL-veiligheid, pool, cache, limieten](#7-data-laag--sql-veiligheid-pool-cache-limieten)
 8. [Audit en admin-endpoints](#8-audit-en-admin-endpoints)
@@ -270,7 +270,7 @@ met `resource_metadata` naar de https-metadata-URL, zodat een client de flow (op
 
 ---
 
-## 5. Autorisatie — tenants, groepen en allowlist
+## 5. Autorisatie — tenants, allowlist en rollen
 
 ### 5.1 Twee lagen
 
@@ -278,17 +278,14 @@ met `resource_metadata` naar de https-metadata-URL, zodat een client de flow (op
 flowchart TD
     T{{"Laag 1 — Tenant<br/>tid ∈ ENTRA_ALLOWED_TENANTS?"}}
     T -- nee --> R401[401 Untrusted tenant]
-    T -- ja --> G{{"Laag 2a — CAMPAI_ALLOWED_GROUP<br/>gezet én in `groups`-claim?"}}
-    G -- ja --> OK1[Toegang: Campai group]
-    G -- nee/leeg --> KV{{"Laag 2b — Key Vault allowlist<br/>oid ∈ users  OF  groups ∩ allowlist.groups ≠ ∅"}}
+    T -- ja --> KV{{"Laag 2 — Key Vault allowlist<br/>oid ∈ users  OF  groups ∩ allowlist.groups ≠ ∅"}}
     KV -- ja --> OK2[Toegang: allowlist]
     KV -- nee --> R403[403 User not on allowlist]
     KV -. KV onbereikbaar .-> R403b[403 Allowlist unavailable]
 ```
 
 - **Laag 1 (tenant)** zit in `validate_jwt`. Instellen via env `ENTRA_ALLOWED_TENANTS` (komma-gescheiden). Een tenant tijdelijk blokkeren = tenant-id eruit halen + revision restart.
-- **Laag 2a** (`CAMPAI_ALLOWED_GROUP`, [`config.py`](../src/admcms_mcp/config.py)) is een optionele shortcut. **In productie is deze env var niet gezet** (staat niet in [`infra/resources.bicep`](../infra/resources.bicep)); de Campai-group loopt dus óók via de KV-allowlist.
-- **Laag 2b** leest Key Vault secret `admcms-allowlist` (JSON `{"users":[oid…],"groups":[oid…]}`), gecachet **5 minuten** in-process.
+- **Laag 2** leest Key Vault secret `admcms-allowlist` (JSON `{"users":[oid…],"groups":[oid…]}`), gecachet **5 minuten** in-process.
 
 ### 5.2 Groepen die nu toegang geven
 
@@ -339,6 +336,60 @@ Wil je admin en data-toegang scheiden — bijvoorbeeld een Campai-collega die we
 mag zien maar niet de audit van anderen — maak dan een aparte groep, wijs die toe aan
 de enterprise app (nodig voor de `ApplicationGroup`-claim) en zet die in `admins.groups`.
 
+### 5.2c Ontbrekende `groups`-claim (overage)
+
+Boven ongeveer 200 groepslidmaatschappen laat Entra de `groups`-claim weg en zet er een
+`_claim_names` / `hasgroups`-verwijzing voor in de plaats, in de verwachting dat de resource
+het lidmaatschap zelf bij Graph ophaalt. Dat doet deze server niet.
+
+`auth.has_group_overage()` herkent die situatie. Gevolg: zo'n gebruiker kan alleen nog via de
+**user**-lijst van de allowlist binnenkomen, en een beheerder die zijn toegang alleen aan een
+groep ontleende wordt geweigerd. Dat wordt gelogd als waarschuwing, en de weigering zelf legt
+het uit in plaats van "User not on allowlist" te zijn — met de oplossing erbij (op de
+allowlist zetten op oid). Zie ook [`docs/ONBOARDING-CUSTOMER.md`](ONBOARDING-CUSTOMER.md).
+
+### 5.2d Rollen per tool
+
+De allowlist bepaalt *of* iemand binnenkomt; de rol bepaalt *wat* hij mag vragen.
+Implementatie: [`roles.py`](../src/admcms_mcp/roles.py).
+
+| Rol | Krijgt bovenop de basis |
+|---|---|
+| `finance` | omzet, marge, KPI's, business-unit, land/segment, top-klanten, verzendkosten, inkoop, creditnota's, betaalmethoden, salesrep, korting, kanaalmix, orders, voorraad, dead stock |
+| `sales` | omzet, top-klanten, orders, voorraad, dead stock, kanaalmix, salesrep, land/segment |
+| `it` | `query_database`, `detect_price_anomalies`, voorraad, dead stock, orders |
+| `viewer` | voorraad |
+| `admin` | alles |
+
+**Basis voor elke rol**: `describe_server`, `health_check`, `get_schema`, `get_lookups`,
+`search_products`, `get_filter_options`. Drie daarvan beschrijven de server in plaats van de
+business; de andere drie heb je nodig voordat je überhaupt een zinnige vraag kunt stellen.
+Meerdere rollen tellen op.
+
+**Waar de rol vandaan komt.** Uit de `roles`-claim van het access token, gevuld door de app
+roles in de app-registratie (`admcms.finance`, `admcms.it`, `admcms.sales`, `admcms.viewer`,
+`admcms.admin`). Bewust niet uit groepslidmaatschap: bij een overage (§5.2c) zou iemand
+stilzwijgend zijn rol kwijtraken. `admcms.invoke` staat in dezelfde claim maar is geen rol in
+deze zin en wordt genegeerd. De waarde wordt soepel gelezen — `admcms.finance`, `Finance` en
+`admcms-finance` komen alle drie uit op `finance`.
+
+**Handhaving op twee plekken.** `server.RoleFilteredMCP.list_tools` verbergt wat je niet mag,
+dus het model ziet het niet eens — en `describe_server` volgt automatisch, want dat leest
+dezelfde lijst. `server._audited` weigert daarnaast de aanroep zelf, en die weigering komt in
+het audit-log te staan. Verbergen is geen autorisatie; de tweede check is dat wel.
+
+**Uitrol.** `ROLE_ENFORCEMENT`: `off` (geen check) / `warn` (**default** — alles mag, elke
+zou-geweigerd-zijn komt als WARNING in de log) / `enforce` (echt weigeren en verbergen).
+Volgorde: op `warn` starten, app roles toewijzen in Entra, een paar dagen de logs of
+`/admin/audit` lezen, dan pas `enforce`. Andersom zou één niet-toegewezen app-rol iedereen
+tegelijk buitensluiten. `ROLE_DEFAULT` (default `viewer`) is wat iemand zonder toegewezen rol
+krijgt.
+
+`/admin/*` valt hier **niet** onder: dat loopt op de `admins`-sectie van de allowlist (§5.2b).
+Eén mechanisme per beslissing.
+
+Stappen om de app roles aan te maken en toe te wijzen: [`docs/DEPLOYMENT.md`](DEPLOYMENT.md#app-roles-toewijzen-rollen-per-tool).
+
 ### 5.3 Wie de gebruiker is downstream
 
 `EntraAuthMiddleware` zet `request.state.user_claims` en de ContextVar `current_user`
@@ -357,6 +408,8 @@ de enterprise app (nodig voor de `ApplicationGroup`-claim) en zet die in `admins
 ---
 
 ## 6. Tools — wat er is en wat ze doen
+
+**Server-instructions.** De FastMCP-instantie geeft `SERVER_INSTRUCTIONS` mee aan elke client. Daarin staat, in de formulering die ook de Campai Securitech-MCP gebruikt, dat tekst tussen `⟦extern⟧` en `⟦/extern⟧` door derden is ingevoerd en altijd gegevens is, nooit een instructie. `server._audited` zet die markeringen om de vrije-tekstkolommen (`Searchname`, `Description`) van elke `data`- en `rows`-lijst. Bewust kort gehouden: codes, datums en bedragen kunnen geen zin bevatten, en waarden die bedoeld zijn om terug te geven aan een tool (`get_lookups`, `get_filter_options`) worden nooit gemarkeerd — een gemarkeerde filterwaarde matcht nergens meer op.
 
 **25 tools** geregistreerd in [`server.py`](../src/admcms_mcp/server.py) (`@mcp.tool()`),
 implementatie in [`tools.py`](../src/admcms_mcp/tools.py). Elke tool loopt door `_audited()`.
@@ -419,7 +472,7 @@ Alles in [`db.py`](../src/admcms_mcp/db.py).
 
 | Onderdeel | Gedrag |
 |---|---|
-| `validate_query(sql)` | Eerste token moet `SELECT` of `WITH` zijn (leidende `(` toegestaan); daarna regex-blacklist op hele tekst: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, EXEC(UTE), MERGE, GRANT, REVOKE → `ValueError`. |
+| `validate_query(sql)` | **Tweede verdedigingslinie, niet de eerste** — de primaire waarborg is de databaselogin: `admcms_mcp` heeft `db_datareader` op één database en niets anders, dus een schrijfactie wordt daar hoe dan ook geweigerd. De check zelf: eerste token moet `SELECT` of `WITH` zijn (leidende `(` toegestaan); `;` mag alleen de query afsluiten, niet statements scheiden; daarna een keyword-blacklist (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, EXEC(UTE), MERGE, GRANT, REVOKE) → `ValueError`. Semicolon- en keyword-check kijken naar de query **met de inhoud van `'…'`-literals leeggemaakt**: een product dat "update kit" heet is geen UPDATE-statement. De foutmelding zegt wat er geweigerd is en hoe het wél kan. |
 | Identifiers | `get_lookups`/`get_distinct_values`: tabel/kolom moeten matchen `^[A-Za-z_][A-Za-z0-9_]{0,127}$` en worden `[…]`-gequote. Waarden altijd via `?`-parameters. |
 | Verbinding | `pyodbc`, ODBC Driver 18, `Encrypt=yes`, `autocommit=True` (geen open transacties/locks), connect-timeout 30 s, **query-timeout 180 s**. Credentials `admcms-db-username`/`-password` uit Key Vault (1× per nieuwe verbinding). |
 | Pool | Max **8** verbindingen (`_POOL_MAX`); dode verbinding wordt transparant vervangen (`SELECT 1`-ping bij uitlenen); verbinding met DB-fout wordt weggegooid. Nodig omdat tool-handlers sinds 2026-08-27 in een worker-thread draaien (zie §3) en dashboard-tegels parallel komen. |
@@ -474,7 +527,6 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `KEY_VAULT_URI` | ✔ | `https://cms-mcp-kv-prod.vault.azure.net/` | Secrets |
 | `ENTRA_APP_ID` | ✔ | `1e6983d3-f996-4581-9518-e6819b79ac6a` | Audience + DCR client_id |
 | `ENTRA_ALLOWED_TENANTS` | ✔ | `bf030cec-…,a92e7c27-…` | Laag-1 autorisatie |
-| `CAMPAI_ALLOWED_GROUP` | – | leeg (niet gezet in prod) | Optionele group-shortcut |
 | `ENTRA_AUTHORITY` | – | `organizations` | Authority voor OAuth-proxy |
 | `PUBLIC_BASE_URL` | – | `https://<container-app-fqdn>` (gezet door deploy-workflow / repo-var) | Extern zichtbare URL in metadata/icons |
 | `PUBLIC_BASE_URL_ALIASES` | – | `https://mcp-cms-adm.cmsnl.com` | Extra hostnames; elke bekende host beschrijft zichzelf in de OAuth-metadata, onbekende hosts vallen terug op `PUBLIC_BASE_URL` |
@@ -486,13 +538,19 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `AUDIT_DB_PATH` | – | `data/audit.db` | Alleen bij `AUDIT_STORE=local` |
 | `AUDIT_RETENTION_DAYS` | – | `365` | Bewaartermijn audit-rijen; `0` schakelt opruimen uit |
 | `MAX_ROWS_HARD_LIMIT` | – | `5000` | Harde row-cap |
+| `CORS_ALLOW_ORIGINS` | – | leeg → `PUBLIC_BASE_URL` + aliases + `null` | Origins die een browser mag gebruiken; `*` zet het oude open gedrag terug |
+| `ALLOW_ENV_SECRETS` | – | `false` | Alleen lokaal: sta secrets uit env toe i.p.v. Key Vault |
+| `ROLE_CLAIM` | – | `roles` | JWT-claim met de app roles |
+| `ROLE_DEFAULT` | – | `viewer` | Rol zonder toegewezen app-rol |
+| `ROLE_ENFORCEMENT` | – | `warn` | `off` / `warn` (loggen) / `enforce` |
+| `DEV_ROLES` | – | `admin` | Rollen bij `AUTH_DISABLED=true`, alleen lokaal |
 | `MAX_CONCURRENT_QUERIES_PER_USER` | – | `3` | Gelijktijdige tool-calls per gebruiker; `0` schakelt de rem uit |
 | `QUERY_QUEUE_TIMEOUT_SECONDS` | – | `60` | Hoe lang een call op een vrije slot wacht voordat hij wordt geweigerd |
 | `AZURE_CLIENT_ID` | – | client-id van MI `CMS-MCP-id-prod` | DefaultAzureCredential kiest de user-assigned MI |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | – | uit Bicep | Telemetrie |
 
 **Key Vault-secrets** (`cms-mcp-kv-prod`): `admcms-db-username`, `admcms-db-password`, `admcms-allowlist` (JSON).
-Lokaal kun je elk secret overriden met env `ADMCMS_DB_USERNAME`, `ADMCMS_DB_PASSWORD`, `ADMCMS_ALLOWLIST` (naam → UPPER, `-`→`_`).
+Lokaal kun je elk secret overriden met env `ADMCMS_DB_USERNAME`, `ADMCMS_DB_PASSWORD`, `ADMCMS_ALLOWLIST` (naam → UPPER, `-`→`_`) — **alleen als `ALLOW_ENV_SECRETS=true`**. Zonder die vlag worden ze genegeerd; anders kan iedereen die een env-var op de container kan zetten de databasecredentials vervangen. Productie zet geen van deze variabelen.
 
 ---
 
@@ -523,10 +581,16 @@ flowchart LR
 
 | # | Wat | Waar | Status |
 |---|---|---|---|
-| 1 | README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`, werkelijk **25** `@mcp.tool()` (incl. `describe_server`, `health_check`, `get_filter_options`, `get_dead_stock`, `get_country_segment_matrix`). | `README.md`, `server.py` | README in deze commit bijgewerkt; `tool_count` zou dynamisch (`len(await mcp.list_tools())`) moeten worden. |
+| 1 | ~~README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`.~~ | `README.md`, `server.py` | **Opgelost 2026-08-27**: `tool_count` telt nu `len(await mcp.list_tools())`, dus hij kan niet meer uit de pas lopen. Test-aantallen in README/CLAUDE.md gelijkgetrokken. |
 | 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py`, `infra/resources.bicep` | **Opgelost 2026-08-19** in de code (`AzureTableStore`, `AUDIT_STORE=azure_table` handmatig op de container app gezet) en **2026-08-27** in de infra: de bicep zei nog `local` + `/tmp/audit.db`, dus de eerstvolgende `az deployment group create` had prod teruggezet. Storage account, table, RBAC en env staan nu in de bicep, met een test die op die drift faalt. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
-| 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
+| 19 | Rollen per tool staan op `ROLE_ENFORCEMENT=warn`: er wordt nog niets geweigerd, alleen gelogd. | `roles.py` | Bewust, tot de app roles in Entra zijn toegewezen. Omzetten naar `enforce` is één env-var. |
+| 4 | ~~`CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad.~~ | `config.py`, `auth.py` | **Opgelost 2026-08-27**: verwijderd. De Campai-groep stond al in de allowlist, dus in productie verandert er niets; er is nu één plek waar toegang wordt besloten in plaats van twee. |
+| 14 | ~~Databasetekst ging ongemarkeerd naar het model (prompt-injectie via productomschrijving of klantnaam).~~ | `server.py`, `query_helpers.py` | **Opgelost 2026-08-27**: `⟦extern⟧`-markering op `Searchname`/`Description` + server-instructions. Zie §6. |
+| 15 | ~~`groups`-claim kon ontbreken zonder dat iemand het merkte.~~ | `auth.py` | **Opgelost 2026-08-27**: overage wordt herkend, gelogd en uitgelegd in de weigering. Zie §5.2c. |
+| 16 | ~~CORS stond op `*`.~~ | `server.py` | **Opgelost 2026-08-27**: eigen hostnames + `null`; `CORS_ALLOW_ORIGINS` als noodklep. |
+| 17 | ~~`validate_query` liet `;` door en weigerde legitieme queries met een keyword in een stringliteral.~~ | `db.py` | **Opgelost 2026-08-27**: `;` expliciet geweigerd, literals leeggemaakt vóór de check, foutmelding legt uit. Zie §7. |
+| 18 | ~~`_env_override` liet secrets uit de omgeving komen, ook in productie.~~ | `keyvault.py` | **Opgelost 2026-08-27**: achter `ALLOW_ENV_SECRETS`, default uit. |
 | 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Het geheugenaspect is opgelost, zie #11. |
 | 6 | Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING). | `docs/*.md` | Cosmetisch; bijwerken bij volgende doc-ronde. |
 | 7 | `groups`-claim: Entra stuurt bij >200 groepen géén `groups`-claim (overage). Zo'n gebruiker moet dan via `users` op de allowlist. | Entra-config | Aandachtspunt bij onboarding grote tenants. |
@@ -563,6 +627,9 @@ Werk bovenaan de regel *"Laatst geverifieerd tegen commit …"* bij.
 
 | Datum | Commit | Wat |
 |---|---|---|
+| 2026-08-27 | (deze commit) | §5 titel + §5.2d rollen per tool, §9 vier env-vars, §11 item 19. |
+| 2026-08-27 | (deze commit) | §5.1 `CAMPAI_ALLOWED_GROUP` verwijderd (diagram + toelichting), §9 env-tabel, §11 item 4. |
+| 2026-08-27 | (deze commit) | §5.2c groups-overage, §6 externe-inhoudmarkering + server-instructions, §7 `validate_query`, §9 twee env-vars, §11 items 1, 14–18. |
 | 2026-08-27 | (deze commit) | §3 niets blokkeert de event loop, §7 cache-LRU + concurrency-rem, §9 twee env-vars, §11 items 5, 10, 11, 13. |
 | 2026-08-27 | (deze commit) | §8 bewaartermijn + opruimlus, §9 `AUDIT_RETENTION_DAYS`, §10 audit-storage in bicep, §11 items 2 en 12. |
 | 2026-08-27 | (deze commit) | §4.2 proxy-hardening (client_id-pin, grant_type-allowlist, redirect_uri-afweging); §8 foutreferenties via `errors.py` + admin-rol rechtgezet; §11 items 8–11. |

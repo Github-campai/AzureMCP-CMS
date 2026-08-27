@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     # Entra app registration identifiers
     entra_app_id: str
     entra_allowed_tenants: list[str]
-    campai_allowed_group: str = ""  # optional; empty disables group check
 
     # Authority segment the OAuth proxy sends users to. "organizations" matches
     # this app's AzureADMultipleOrgs audience: any work/school tenant may sign
@@ -55,6 +54,19 @@ class Settings(BaseSettings):
     # terug op public_base_url zodat een gespoofte Host-header geen vreemd
     # domein kan laten adverteren.
     public_base_url_aliases: list[str] = []
+
+    # Extra origins die CORS mag gebruiken, komma-gescheiden. Leeg = afgeleid
+    # van public_base_url + aliases + "null" (de admin-UI over file://). Zet
+    # "*" om terug te vallen op het oude gedrag als een browserclient breekt.
+    cors_allow_origins: list[str] = []
+
+    # Rollen per tool (zie roles.py). De rol komt uit de app-roles van Entra.
+    role_claim: str = "roles"
+    role_default: str = "viewer"
+    # "off" | "warn" (alleen loggen, stand tijdens de uitrol) | "enforce"
+    role_enforcement: str = "warn"
+    # Rollen die gelden bij AUTH_DISABLED=true (alleen lokaal), komma-gescheiden.
+    dev_roles: str = "admin"
 
     # Database connection (non-secret parts; password comes from Key Vault)
     admcms_server: str = "cmsnl.database.windows.net"
@@ -88,7 +100,7 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("public_base_url_aliases", mode="before")
+    @field_validator("cors_allow_origins", "public_base_url_aliases", mode="before")
     @classmethod
     def split_aliases(cls, v):
         """Split comma-separated string into a list of base URLs."""

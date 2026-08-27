@@ -174,21 +174,51 @@ def _refresh_allowlist() -> dict[str, list[str]]:
     return data
 
 
+def has_group_overage(claims: dict[str, Any]) -> bool:
+    """True when Entra left the `groups` claim out because there were too many.
+
+    Past roughly 200 group memberships Entra stops embedding them and puts a
+    `_claim_names` / `hasgroups` pointer in the token instead, expecting the
+    resource to fetch the list from Graph. Nothing here does that, so such a
+    user silently falls back to the per-user allowlist — and an administrator
+    who only had access through a group is refused with a message that explains
+    nothing. Detecting it does not fix the membership, but it turns a mystery
+    into a sentence someone can act on.
+    """
+    if claims.get("hasgroups"):
+        return True
+    claim_names = claims.get("_claim_names") or {}
+    return isinstance(claim_names, dict) and "groups" in claim_names
+
+
+def _overage_note(claims: dict[str, Any]) -> str:
+    """Extra sentence for a denial when the groups claim went missing."""
+    if not has_group_overage(claims):
+        return ""
+    return (
+        " Your token carries no group list because you are a member of too many groups "
+        "(Entra group overage), so group-based access could not be evaluated. Ask an "
+        "administrator to add you to the allowlist by user id."
+    )
+
+
 def check_access(claims: dict[str, Any]) -> None:
     """Raise Forbidden unless the claim subject is on the allowlist.
 
-    Order: (1) Campai group membership, (2) Key Vault JSON allowlist.
-    Tenant check already happened in validate_jwt.
+    One list decides: the JSON in Key Vault, by user id or by group. The tenant
+    check already happened in `validate_jwt`.
     """
-    settings = get_settings()
     oid = claims.get("oid", "")
     groups = claims.get("groups") or []
     upn = claims.get("upn", "")
 
-    # Campai group allowlist (Entra security group in Campai tenant)
-    if settings.campai_allowed_group and settings.campai_allowed_group in groups:
-        logger.info("Access granted via Campai group: upn=%s oid=%s", upn, oid)
-        return
+    if has_group_overage(claims):
+        logger.warning(
+            "Token has a groups overage (no group list); only the user allowlist applies. "
+            "upn=%s oid=%s",
+            upn,
+            oid,
+        )
 
     # Key Vault allowlist
     try:
@@ -206,7 +236,7 @@ def check_access(claims: dict[str, Any]) -> None:
         return
 
     logger.info("Access denied: upn=%s oid=%s tid=%s", upn, oid, claims.get("tid"))
-    raise Forbidden("User not on allowlist")
+    raise Forbidden("User not on allowlist." + _overage_note(claims))
 
 
 def check_admin_access(claims: dict[str, Any]) -> None:
@@ -229,6 +259,14 @@ def check_admin_access(claims: dict[str, Any]) -> None:
     oid = claims.get("oid", "")
     groups = claims.get("groups") or []
     upn = claims.get("upn", "")
+
+    if has_group_overage(claims):
+        logger.warning(
+            "Admin check on a token with a groups overage; only the admin user list "
+            "applies. upn=%s oid=%s",
+            upn,
+            oid,
+        )
 
     try:
         allowlist = _load_allowlist()
@@ -256,4 +294,4 @@ def check_admin_access(claims: dict[str, Any]) -> None:
         return
 
     logger.info("Admin access denied: upn=%s oid=%s", upn, oid)
-    raise Forbidden("Not an administrator")
+    raise Forbidden("Not an administrator." + _overage_note(claims))

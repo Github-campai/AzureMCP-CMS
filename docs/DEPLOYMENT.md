@@ -77,6 +77,49 @@ Authorisatie via Key Vault secret `admcms-allowlist`. Structure:
 
 **Nieuwe CMS-user toevoegen**: CMS IT-admin doet hetzelfde in hun eigen tenant op `SG-CMS-MCP-Users`. Geen actie van Campai-kant.
 
+## App roles toewijzen (rollen per tool)
+
+De allowlist bepaalt of iemand binnenkomt, de rol bepaalt wat hij mag vragen
+(zie [`ARCHITECTUUR.md`](ARCHITECTUUR.md#52d-rollen-per-tool)). De rol komt uit
+de `roles`-claim van het token, dus dit is Entra-configuratie — geen deploy.
+
+**Eenmalig: de rollen aanmaken.** Azure Portal → Microsoft Entra ID → App
+registrations → de admcms-mcp app → **App roles** → *Create app role*, vijf keer:
+
+| Display name | Value | Allowed member types |
+|---|---|---|
+| Finance | `admcms.finance` | Users/Groups |
+| Sales | `admcms.sales` | Users/Groups |
+| IT | `admcms.it` | Users/Groups |
+| Viewer | `admcms.viewer` | Users/Groups |
+| Admin | `admcms.admin` | Users/Groups |
+
+Laat `admcms.invoke` staan; die is voor service principals en is geen rol in
+deze zin.
+
+**Per persoon of groep: toewijzen.** Entra ID → **Enterprise applications** →
+admcms-mcp → *Users and groups* → *Add user/group* → kies de gebruiker of
+security-groep en de rol. Toewijzen aan een groep werkt en heeft de voorkeur:
+dan hoeft een nieuwe collega alleen in de juiste groep.
+
+**De gebruiker moet één keer opnieuw inloggen** — de rol zit in het token, niet
+in de sessie. In de connector: verbinding verbreken en opnieuw autoriseren.
+
+**Controleren.** Laat de gebruiker `describe_server` aanroepen; onder `jij` staat
+`rollen`. Of kijk in `/admin/audit`: een geweigerde aanroep staat er met de
+reden bij.
+
+**Scherpzetten.** Zolang `ROLE_ENFORCEMENT=warn` (de default) wordt er niets
+geweigerd en alleen gelogd. Als de toewijzingen kloppen:
+
+```bash
+az containerapp update -n cms-mcp-app-prod -g CMS-MCP-rg-prod   --set-env-vars ROLE_ENFORCEMENT=enforce
+```
+
+Terugdraaien is dezelfde opdracht met `warn`. Zet het pas om als je in de logs
+hebt gezien dat er niemand onterecht geraakt zou worden — anders sluit één
+vergeten toewijzing iemand buiten.
+
 ## Key Vault secrets beheren
 
 Janneke@campai.nl heeft `Key Vault Secrets Officer` op `cms-mcp-kv-prod`. Direct
