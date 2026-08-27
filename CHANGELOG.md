@@ -8,6 +8,99 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — Ronde van 27 augustus (samenvatting)
+
+Zes wijzigingen op één dag, hieronder elk apart beschreven. Dit blok vertelt wat
+het samen betekent.
+
+### Voor Roland: wat verandert er voor jou
+
+**Doe eerst `git pull`.** Er staan tien commits op `main` van 27 augustus.
+
+**1. Tools zijn nu `async`.** Dit is de enige wijziging die je werkwijze raakt.
+Een nieuwe tool registreer je nog steeds in `server.py` met `@mcp.tool()` +
+`_audited(...)`, maar het patroon is nu:
+
+```python
+@mcp.tool()
+async def get_iets(start_date: str) -> dict:      # async def, niet def
+    """..."""
+    return await _audited(                         # await
+        "get_iets",
+        {"start_date": start_date},
+        lambda: _get_iets(start_date),             # de pure functie blijft synchroon
+    )
+```
+
+De functie in `tools.py` blijft gewoon synchroon — die draait in een
+worker-thread. Alleen de registratie in `server.py` is async geworden. Vergeet je
+het `await`, dan krijg je een coroutine terug in plaats van een dict en faalt je
+test meteen.
+
+**2. Hang je nieuwe tool aan een rol.** In `roles.py` staat per rol welke tools
+erbij horen. Zit je tool in geen enkele rol, dan faalt `tests/test_roles.py` —
+met opzet, want een tool die niemand mag aanroepen is een configuratiefout.
+Weet je het niet zeker: `_FINANCE_TOOLS` is meestal de juiste.
+
+**3. Foutafhandeling loopt via `client_error()`.** Niet meer
+`error=f"Execution error: {e}"`, maar:
+
+```python
+except Exception as e:
+    logger.exception("get_iets failed")
+    return format_response(data=[], error=client_error(e))
+```
+
+De volledige tekst gaat naar het log en de audit-entry; de klant krijgt een
+neutrale zin met een referentie waarmee jij de fout terugvindt via
+`GET /admin/audit/{referentie}`. Reden: pyodbc noemt de driver, de servernaam en
+soms een stuk SQL, en dat belandde in het gespreksvenster van de klant.
+
+**4. Vrije SQL cachet niet meer.** `execute_query(...)` heeft er een parameter
+`use_cache` bij (default `True`). Zet hem op `False` als vers belangrijker is
+dan snel.
+
+**5. `;` in een query wordt geweigerd** behalve als afsluiter. Keyword-checks
+kijken nu naar de query met stringliterals leeggemaakt, dus een product dat
+"update kit" heet werkt eindelijk gewoon.
+
+**6. De container draait Python 3.14**, en de tests op CI nog op 3.12. Houd daar
+rekening mee als je iets versie-gevoeligs gebruikt.
+
+**7. `CAMPAI_ALLOWED_GROUP` bestaat niet meer.** Toegang loopt volledig via de
+allowlist in Key Vault.
+
+Verder: 357 → 475 tests. `pytest -q` en `ruff check . && ruff format --check .`
+moeten groen zijn vóór je pusht, CI blokkeert de deploy anders.
+
+### Wat er is opgelost
+
+**De disconnects.** Dit was de aanleiding voor de hele ronde. De MCP SDK roept
+een synchrone tool-functie rechtstreeks op de event loop aan, dus tijdens een
+query van maximaal 180 seconden antwoordde het proces niets — ook `/healthz`
+niet. Azure las dat als een dode container en herstartte hem, waarna iedereen
+die verbonden was eruit vloog. Dertien van die restarts op 27 augustus alleen
+al, aantoonbaar uit `ContainerAppSystemLogs`. Sinds de fix: nul.
+
+Verder in deze ronde: de OAuth-proxy was op ons eigen domein een open relay naar
+Entra, rauwe databasefouten gingen naar de klant, de audit-configuratie stond
+niet in de bicep (een `az deployment group create` had prod teruggezet naar een
+SQLite-bestand in `/tmp`), de query-cache groeide onbegrensd, één gebruiker kon
+alle acht databaseverbindingen bezetten, en databasetekst ging ongemarkeerd naar
+het model.
+
+### Wat er nog moet gebeuren
+
+| Wat | Wie |
+|---|---|
+| Vijf app roles aanmaken en toewijzen in Entra (`docs/DEPLOYMENT.md`) | Campai |
+| Daarna `ROLE_ENFORCEMENT=enforce` — nu staat het op `warn` en wordt er niets geweigerd | Campai |
+| `saazuredb`-wachtwoord roteren (stond al open) | Campai + leverancier |
+| `nightly-restart.yml` weghalen zodra `ReplicaUnhealthy` een week wegblijft | Campai |
+| 3.14 aan de CI-matrix toevoegen, zodat het vinkje de runtime dekt | Campai |
+
+---
+
 ## 2026-08-27 — `scripts/discover_schemas.py` gered
 
 Op de laptop stond nog een losse kopie van dit project uit april, buiten git om.
@@ -497,6 +590,11 @@ bytes gelezen, niet uit de extensie.
 | `saazuredb`-wachtwoord roteren (staat nog in de git-historie) | Campai + leverancier |
 | `AllowAllWindowsAzureIps` in de SQL-firewall vervangen door `50.85.29.106` | Campai + leverancier |
 | Copilot-route voor Joost (bestaande Copilot Studio-connector of MCP rechtstreeks) | keuze CMS |
-| Nachtelijke restart: oorzaak nooit onderzocht, staat er als workaround | Campai |
-| `health_check.tool_count` staat hardcoded op 23 terwijl er 25 tools zijn | Campai |
 | SQL-auditing bewaart 7 dagen — kort als je wilt weten of het gelekte wachtwoord gebruikt is | Campai |
+| Vijf app roles aanmaken en toewijzen in Entra, daarna `ROLE_ENFORCEMENT=enforce` | Campai |
+| `nightly-restart.yml` weghalen zodra `ReplicaUnhealthy` een week wegblijft | Campai |
+| Python 3.14 aan de CI-matrix toevoegen — de container draait er al op, de tests nog op 3.12 | Campai |
+
+Afgehandeld op 27-08-2026: de oorzaak van de nachtelijke restart is gevonden en
+opgelost (zie de ronde van 27 augustus), en `health_check.tool_count` telt nu de
+tools in plaats van een hardcoded 23.
