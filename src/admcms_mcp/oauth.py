@@ -18,6 +18,17 @@ Entra remains the only identity provider; nothing is minted here. Because the
 token exchange runs server-side without a client secret, the Entra app
 registration must carry the client redirect URIs under *publicClient*
 ("Mobile and desktop applications") — see docs/DEPLOYMENT.md.
+
+Both proxied endpoints only broker what this server actually advertises: the
+`client_id` must be the one `/register` hands out, and `/token` accepts only the
+grant types listed in `authorization_server_metadata()`. Anything else is a 400
+here instead of a request carrying our hostname to Entra.
+
+`redirect_uri` is deliberately *not* checked against a list. Entra already
+refuses any redirect that is not registered on the app, and the set of MCP
+client callbacks is open-ended (`https://claude.ai/...`, `vscode://...`,
+`cursor://...`, `http://127.0.0.1:<random port>/`), so a local allowlist would
+break new clients without adding a guarantee Entra does not already give.
 """
 
 from __future__ import annotations
@@ -41,6 +52,12 @@ SCOPE_SHORT = "admcms.read"
 
 #: Scopes that Entra understands verbatim and that must survive the rewrite.
 _PASSTHROUGH_SCOPES = frozenset({"openid", "profile", "email", "offline_access"})
+
+#: Grant types the token proxy forwards. `authorization_server_metadata()`
+#: advertises exactly these two, so anything else is a client that either
+#: misread the metadata or is probing — refuse it here rather than let Entra
+#: decide what our proxy is willing to broker.
+ALLOWED_GRANT_TYPES = frozenset({"authorization_code", "refresh_token"})
 
 #: Paths this module serves. `server.py` adds these to the auth middleware's
 #: public set — an unauthenticated client must be able to discover how to
@@ -230,6 +247,37 @@ async def register_client(request: Request) -> JSONResponse:
     )
 
 
+def _bad_request(description: str, error: str = "invalid_request") -> JSONResponse:
+    """RFC 6749 §5.2 error body."""
+    return JSONResponse({"error": error, "error_description": description}, status_code=400)
+
+
+def _reject_foreign_client(params: dict[str, str]) -> JSONResponse | None:
+    """Refuse a `client_id` other than the one `/register` hands out.
+
+    Without this check `/authorize` is an open relay: anyone can craft a link on
+    our own domain that carries the user to Entra and asks consent for *their*
+    application, borrowing our hostname's credibility. The same applies to
+    `/token`, where a foreign client_id would have us broker an exchange for an
+    app we know nothing about.
+
+    Deliberately a refusal rather than a silent overwrite: a client sending a
+    different id has a configuration problem, and quietly correcting it would
+    hide that from whoever has to debug the connector.
+    """
+    settings = get_settings()
+    expected = settings.entra_app_id.strip()
+    supplied = (params.get("client_id") or "").strip()
+
+    if not supplied:
+        return _bad_request("client_id is required")
+    if supplied not in {expected, resource_uri(expected)}:
+        # Client-controlled value: truncated and repr'd so it cannot forge log lines.
+        logger.warning("Refused proxy request with unknown client_id=%r", supplied[:80])
+        return _bad_request("client_id is not registered with this authorization server")
+    return None
+
+
 async def authorize_proxy(request: Request) -> Response:
     """Redirect to Entra, rewriting the scope and dropping RFC 8707 `resource`.
 
@@ -244,6 +292,10 @@ async def authorize_proxy(request: Request) -> Response:
         )
 
     params = dict(request.query_params)
+    refusal = _reject_foreign_client(params)
+    if refusal is not None:
+        return refusal
+
     params.pop("resource", None)
     params["scope"] = _rewrite_scope(params.get("scope", ""))
     return RedirectResponse(
@@ -262,6 +314,19 @@ async def token_proxy(request: Request) -> Response:
 
     form = await request.form()
     body = {key: str(value) for key, value in form.items()}
+
+    grant_type = body.get("grant_type", "").strip()
+    if grant_type not in ALLOWED_GRANT_TYPES:
+        logger.warning("Refused token request with grant_type=%r", grant_type[:40])
+        return _bad_request(
+            f"grant_type must be one of {sorted(ALLOWED_GRANT_TYPES)}",
+            error="unsupported_grant_type",
+        )
+
+    refusal = _reject_foreign_client(body)
+    if refusal is not None:
+        return refusal
+
     body.pop("resource", None)
     if "scope" in body:
         body["scope"] = _rewrite_scope(body["scope"])

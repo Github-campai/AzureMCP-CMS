@@ -5,7 +5,7 @@
 > auth, autorisatie, endpoints, tools, data-laag, config of deploy (zie [`CLAUDE.md`](../CLAUDE.md)).
 > Verifieer bij twijfel altijd tegen de code; de bestandsverwijzingen hieronder zijn daarvoor.
 >
-> Laatst geverifieerd tegen commit `HEAD` (main) — 2026-08-19.
+> Laatst geverifieerd tegen commit `22be027` (main) — 2026-08-27.
 >
 > De app antwoordt op twee hostnames: `admcms.campai.nl` (Campai) en
 > `mcp-cms-adm.cmsnl.com` (klantnaam). Beide hebben een managed certificate en
@@ -237,6 +237,8 @@ sequenceDiagram
 - `_rewrite_scope()`: `admcms.read` → `api://<app-id>/admcms.read`; `openid/profile/email/offline_access` passeren; `offline_access` wordt altijd toegevoegd (anders geen refresh token → sessie sterft na ~1 uur).
 - `resource` (RFC 8707) wordt gestript: Entra v2.0 kent die parameter niet en weigert anders.
 - `/token` logt bij fouten alleen `grant_type`, `client_id`, `scope` — nooit code/refresh_token.
+- **De proxy brokert alleen wat we adverteren.** `client_id` moet de app-id zijn die `/register` uitdeelt (`ENTRA_APP_ID`, of de `api://`-vorm daarvan); een andere waarde geeft `400 invalid_request` in plaats van een redirect. Zonder die pin is `/authorize` op ons domein een open relay: iemand bouwt een inlog-URL die er uitziet als de onze maar consent vraagt voor zijn eigen app. `/token` accepteert daarnaast alleen `grant_type` uit `ALLOWED_GRANT_TYPES` (`authorization_code`, `refresh_token`) — precies wat `authorization_server_metadata()` adverteert; al het andere is `400 unsupported_grant_type` en bereikt Entra niet.
+- **`redirect_uri` wordt bewust niet getoetst** aan een eigen lijst. Entra weigert al elke redirect die niet op de app geregistreerd staat, en de verzameling MCP-client-callbacks is open (`https://claude.ai/…`, `vscode://…`, `cursor://…`, `http://127.0.0.1:<willekeurige poort>/`); een lokale allowlist zou nieuwe clients breken zonder een garantie toe te voegen die Entra niet al geeft.
 - `ENTRA_AUTHORITY` (default `organizations`) bepaalt naar welke authority `/authorize` en `/token` gaan; tenant-beperking gebeurt daarna in `validate_jwt`.
 - Redirect-URIs van clients moeten in de Entra-app onder **publicClient** ("Mobile and desktop") staan — [`scripts/add-client-redirect-uris.ps1`](../scripts/add-client-redirect-uris.ps1). Fout `AADSTS50011` = URI ontbreekt.
 
@@ -430,7 +432,11 @@ mislukte refresh wordt niet "vers" geserveerd — nightly restart maakte `now-0.
 - Stores via env `AUDIT_STORE`: `azure_table` (**prod**, Azure Table Storage via de managed identity; `AUDIT_TABLE_ACCOUNT_URL`, `AUDIT_TABLE_NAME`), `local` (SQLite, `AUDIT_DB_PATH` — lokale ontwikkeling), `none` (NullStore, tests).
 - **AzureTableStore-indeling**: PartitionKey = UTC-datum (tijdvraag raakt enkele partities i.p.v. de hele tabel), RowKey = geïnverteerde tick-count + entry-id (Table Storage sorteert alleen oplopend, dus inverteren maakt "nieuwste eerst" de natuurlijke leesorde). `has_error` is een opgeslagen boolean omdat filteren op `error != ''` in Table Storage onbetrouwbaar is. JSON-velden worden op 30k tekens afgekapt met een marker: één property mag max 64 KiB zijn, en een entry verliezen is erger dan een afgekapte SQL-string.
 
-**Admin** ([`admin.py`](../src/admcms_mcp/admin.py)) — allemaal achter dezelfde JWT-middleware; geen aparte admin-rol (iedereen op de allowlist kan ze lezen).
+**Foutreferenties** ([`errors.py`](../src/admcms_mcp/errors.py))
+
+`client_error(exc)` is de enige plek waar een exceptie een clientboodschap wordt. De volledige tekst — pyodbc noemt driver, servernaam en soms een stuk SQL — gaat naar het log én naar `entry.error` van de lopende audit-call; de client krijgt een neutrale zin met een referentie. Die referentie *is* de `id` van de audit-entry, dus `GET /admin/audit/{referentie}` levert het hele verhaal. Alle `except`-takken in [`tools.py`](../src/admcms_mcp/tools.py) en de DB-ping in `health_check` lopen hierlangs.
+
+**Admin** ([`admin.py`](../src/admcms_mcp/admin.py)) — achter dezelfde JWT-middleware én achter `check_admin_access()` (zie §5.2b): op de allowlist staan is niet genoeg.
 
 | Endpoint | Retour |
 |---|---|
@@ -502,9 +508,13 @@ flowchart LR
 | 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py` | **Opgelost 2026-08-19**: `AzureTableStore` geïmplementeerd, `AUDIT_STORE=azure_table` in prod. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
 | 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
-| 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). |
+| 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Zie ook #11 voor het geheugenaspect. |
 | 6 | Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING). | `docs/*.md` | Cosmetisch; bijwerken bij volgende doc-ronde. |
 | 7 | `groups`-claim: Entra stuurt bij >200 groepen géén `groups`-claim (overage). Zo'n gebruiker moet dan via `users` op de allowlist. | Entra-config | Aandachtspunt bij onboarding grote tenants. |
+| 8 | ~~`/authorize` en `/token` gaven `client_id` en `grant_type` ongefilterd door aan Entra.~~ | `oauth.py` | **Opgelost 2026-08-27**: client_id gepind op `ENTRA_APP_ID`, grant_type-allowlist. |
+| 9 | ~~Rauwe pyodbc-tekst (driver, servernaam, SQL-fragment) ging naar de client.~~ | `tools.py`, `server.py` | **Opgelost 2026-08-27**: `errors.client_error()` maskeert; volledige tekst in log + audit-entry, client krijgt een referentie. |
+| 10 | Geen rate-limiting of concurrency-rem per gebruiker; één zware `query_database` kan de server voor iedereen bezet houden. | `server.py`, `db.py` | Open — zie bevinding 4 van de review van 2026-08-27. |
+| 11 | Query-cache in `db.py` heeft geen eviction en groeit onbegrensd. | `db.py` | Open — zie bevinding 5. |
 
 ---
 
@@ -532,4 +542,5 @@ Werk bovenaan de regel *"Laatst geverifieerd tegen commit …"* bij.
 
 | Datum | Commit | Wat |
 |---|---|---|
+| 2026-08-27 | (deze commit) | §4.2 proxy-hardening (client_id-pin, grant_type-allowlist, redirect_uri-afweging); §8 foutreferenties via `errors.py` + admin-rol rechtgezet; §11 items 8–11. |
 | 2026-08-19 | (deze commit) | Eerste versie na volledige code-analyse (auth, autorisatie, groepen, 25 tools, data-laag, audit, deploy). |

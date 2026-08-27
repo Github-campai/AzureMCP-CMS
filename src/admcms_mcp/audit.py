@@ -118,6 +118,15 @@ def audit_call(tool_name: str, args: dict[str, Any]):
             logger.exception("Failed to write audit entry for %s", tool_name)
 
 
+def current_entry() -> AuditEntry | None:
+    """The audit entry for the tool call in progress, or None outside one.
+
+    `errors.client_error` uses this to attach the full exception text to the
+    call being audited while handing the client only a reference.
+    """
+    return _current_entry.get()
+
+
 def record_sql(sql: str, params: tuple | list | None, duration_ms: int, row_count: int) -> None:
     """Register an executed SQL call against the active audit entry.
 

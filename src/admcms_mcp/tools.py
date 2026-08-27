@@ -17,6 +17,7 @@ from admcms_mcp.db import (
     get_distinct_values,
     get_schema_columns,
 )
+from admcms_mcp.errors import client_error
 from admcms_mcp.query_helpers import (
     admcms_date,
     build_filter_where,
@@ -58,7 +59,7 @@ def query_database(sql: str, max_rows: int = 100) -> dict[str, Any]:
         return {"sql": sql, "error": str(e), "rows": []}
     except Exception as e:
         logger.exception("Query execution failed")
-        return {"sql": sql, "error": f"Execution error: {e}", "rows": []}
+        return {"sql": sql, "error": client_error(e), "rows": []}
 
 
 def get_schema(table_name: str) -> dict[str, Any]:
@@ -72,7 +73,7 @@ def get_schema(table_name: str) -> dict[str, Any]:
         return {"table": table_name, "error": str(e), "columns": []}
     except Exception as e:
         logger.exception("get_schema failed")
-        return {"table": table_name, "error": f"Execution error: {e}", "columns": []}
+        return {"table": table_name, "error": client_error(e), "columns": []}
 
 
 def get_lookups(table_name: str, column_name: str, top_n: int = 50) -> dict[str, Any]:
@@ -91,7 +92,7 @@ def get_lookups(table_name: str, column_name: str, top_n: int = 50) -> dict[str,
         return {
             "table": table_name,
             "column": column_name,
-            "error": f"Execution error: {e}",
+            "error": client_error(e),
             "values": [],
         }
 
@@ -131,7 +132,7 @@ def search_products(search_term: str, limit: int = 20, offset: int = 0) -> dict[
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("search_products failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 _VALID_GROUP_BY = ("total", "month", "make", "customer", "country", "productgroup")
@@ -434,7 +435,7 @@ def get_revenue(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_revenue failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 _VALID_MARGIN_GROUP_BY = (
@@ -760,7 +761,7 @@ def get_margin_report(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_margin_report failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def _fetch_kpi_block(
@@ -921,7 +922,7 @@ def get_kpi_summary(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_kpi_summary failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 _BUSINESS_UNIT_CASE = (
@@ -979,7 +980,7 @@ def get_revenue_by_business_unit(start_date: str, end_date: str) -> dict[str, An
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_revenue_by_business_unit failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def get_country_segment_matrix(
@@ -1077,7 +1078,7 @@ def get_country_segment_matrix(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_country_segment_matrix failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def get_top_customers(
@@ -1130,7 +1131,7 @@ def get_top_customers(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_top_customers failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def _shipping_scope_clauses(exclude_credits: bool, paid_only: bool) -> str:
@@ -1198,7 +1199,7 @@ def get_shipping_summary(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_shipping_summary failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 _VALID_SHIPPING_GROUP_BY = (
@@ -1477,7 +1478,7 @@ def get_shipping_cost_analysis(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_shipping_cost_analysis failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 # Known corrupt supplier — documented issue, excluded from purchase totals by default
@@ -1535,7 +1536,7 @@ def detect_price_anomalies(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("detect_price_anomalies failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def get_stock_levels(
@@ -1592,7 +1593,7 @@ def get_stock_levels(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_stock_levels failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def get_supplier_purchases(
@@ -1663,7 +1664,7 @@ def get_supplier_purchases(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_supplier_purchases failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def get_customer_orders(
@@ -1708,7 +1709,7 @@ def get_customer_orders(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_customer_orders failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 # =========================================================================
@@ -1907,7 +1908,7 @@ def get_credit_note_analysis(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_credit_note_analysis failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def _fetch_payment_methods(start_date: str, end_date: str) -> list[dict[str, Any]]:
@@ -2004,7 +2005,7 @@ def get_payment_method_stats(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_payment_method_stats failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def _fetch_salesrep(start_date: str, end_date: str) -> list[dict[str, Any]]:
@@ -2080,7 +2081,7 @@ def get_salesrep_performance(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_salesrep_performance failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 _VALID_DISCOUNT_GROUP_BY = ("segment", "customer", "make", "productgroup", "salesrep", "total")
@@ -2244,7 +2245,7 @@ def get_discount_analysis(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_discount_analysis failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 def _fetch_order_origin(
@@ -2360,7 +2361,7 @@ def get_order_origin_mix(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_order_origin_mix failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 _DEAD_STOCK_GROUP_BY = ("product", "make", "productgroup")
@@ -2561,7 +2562,7 @@ def get_dead_stock(
         return format_response(data=[], error=str(e))
     except Exception as e:
         logger.exception("get_dead_stock failed")
-        return format_response(data=[], error=f"Execution error: {e}")
+        return format_response(data=[], error=client_error(e))
 
 
 _FILTER_OPTIONS_BUSINESS_UNITS = ["B2C", "B2B", "IC"]
@@ -2716,7 +2717,7 @@ def get_filter_options(max_per_dim: int = 0) -> dict[str, Any]:
                 dims[key] = vals
         except Exception as e:  # noqa: BLE001 - one bad dim must not sink the rest
             logger.warning("get_filter_options: %s query failed: %s", key, e)
-            errors[key] = str(e)
+            errors[key] = client_error(e, action=f"Filter option lookup for {key}")
 
     if use_cache:
         with _filter_options_lock:
@@ -2730,7 +2731,7 @@ def get_filter_options(max_per_dim: int = 0) -> dict[str, Any]:
     result["business_unit"] = list(_FILTER_OPTIONS_BUSINESS_UNITS)
     _annotate_filter_options(result, afgekapt, caps)
     if errors:
-        result["error"] = "Execution error: " + "; ".join(f"{k}: {v}" for k, v in errors.items())
+        result["error"] = "; ".join(f"{k}: {v}" for k, v in errors.items())
     return result
 
 

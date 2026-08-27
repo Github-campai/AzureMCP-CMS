@@ -42,6 +42,7 @@ from admcms_mcp.branding import (
 )
 from admcms_mcp.config import get_settings
 from admcms_mcp.db import _MAX_ROWS_HARD_LIMIT, reset_truncation, was_truncated
+from admcms_mcp.errors import client_error
 from admcms_mcp.oauth import PUBLIC_PATHS as OAUTH_PUBLIC_PATHS
 from admcms_mcp.oauth import build_oauth_routes, protected_resource_metadata_url
 from admcms_mcp.schema import SCHEMA_KNOWLEDGE
@@ -1230,40 +1231,46 @@ def _build_mcp_server() -> FastMCP:
 
         from admcms_mcp.db import execute_query
 
-        result: dict = {
-            "status": "ok",
-            "server": {
-                "name": "admcms-mcp",
-                "time_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-                "tool_count": 23,
-            },
-            "database": {"status": "ok", "latency_ms": None, "error": None},
-            "caller": {"upn": None, "oid": None, "tid": None},
-        }
+        def probe() -> dict:
+            result: dict = {
+                "status": "ok",
+                "server": {
+                    "name": "admcms-mcp",
+                    "time_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "tool_count": 23,
+                },
+                "database": {"status": "ok", "latency_ms": None, "error": None},
+                "caller": {"upn": None, "oid": None, "tid": None},
+            }
 
-        # DB ping
-        db_start = time.perf_counter()
-        try:
-            rows = execute_query("SELECT 1 AS ping", max_rows=1)
-            result["database"]["latency_ms"] = round((time.perf_counter() - db_start) * 1000, 1)
-            if not rows or rows[0].get("ping") != 1:
-                result["database"]["status"] = "degraded"
-                result["database"]["error"] = "unexpected response from SELECT 1"
-                result["status"] = "degraded"
-        except Exception as e:
-            result["database"]["status"] = "down"
-            result["database"]["error"] = str(e)[:200]
-            result["status"] = "down"
+            # DB ping
+            db_start = time.perf_counter()
+            try:
+                rows = execute_query("SELECT 1 AS ping", max_rows=1)
+                result["database"]["latency_ms"] = round((time.perf_counter() - db_start) * 1000, 1)
+                if not rows or rows[0].get("ping") != 1:
+                    result["database"]["status"] = "degraded"
+                    result["database"]["error"] = "unexpected response from SELECT 1"
+                    result["status"] = "degraded"
+            except Exception as e:
+                result["database"]["status"] = "down"
+                result["database"]["error"] = client_error(e, action="Database ping")
+                result["status"] = "down"
 
-        # Caller (best-effort, not all transports expose request scope)
-        try:
-            user = current_user.get()
-            if user:
-                result["caller"]["upn"] = user
-        except Exception:
-            pass
+            # Caller (best-effort, not all transports expose request scope)
+            try:
+                user = current_user.get()
+                if user:
+                    result["caller"]["upn"] = user
+            except Exception:
+                pass
 
-        return _audited("health_check", {}, lambda: result)
+            return result
+
+        # The probe runs *inside* the audit context, so a failing ping lands on
+        # an audit entry and the reference handed to the caller resolves under
+        # GET /admin/audit/{reference}.
+        return _audited("health_check", {}, probe)
 
     @mcp.resource("admcms://schema-knowledge")
     def schema_resource() -> str:
