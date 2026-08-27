@@ -150,8 +150,25 @@ def clear_query_cache() -> None:
         _query_cache.clear()
 
 
+def _strip_string_literals(sql: str) -> str:
+    """Blank out the contents of '…' literals, keeping the quotes.
+
+    Lets the keyword and semicolon checks look at SQL structure instead of at
+    data. A product name containing "update" is not an UPDATE statement, and a
+    refusal that cannot tell the difference is one people learn to work around.
+    """
+    return re.sub(r"'(?:''|[^'])*'", "''", sql)
+
+
 def validate_query(sql: str) -> None:
-    """Raise ValueError unless `sql` is a pure SELECT/WITH read query."""
+    """Raise ValueError unless `sql` is a pure SELECT/WITH read query.
+
+    Second line of defence, not the first. The account the server connects with
+    (`admcms_mcp`) has `db_datareader` on one database and nothing else, so a
+    write is refused by SQL Server whatever passes here. This check exists to
+    turn that refusal into a clear message before a query is sent, and to keep
+    obvious nonsense out of the audit log.
+    """
     stripped = sql.strip()
     if not stripped:
         raise ValueError("Query cannot be empty")
@@ -159,14 +176,32 @@ def validate_query(sql: str) -> None:
     first_token = stripped.lstrip("(").split(None, 1)[0].upper()
     if first_token not in ("SELECT", "WITH"):
         if first_token in _DANGEROUS_KEYWORDS:
-            raise ValueError(f"Query contains forbidden keyword: {first_token}")
+            raise ValueError(
+                f"Only read queries are allowed, and this one starts with {first_token}. "
+                f"The database login has read-only rights, so a write would be refused "
+                f"there too."
+            )
         raise ValueError(
             f"Only SELECT/WITH queries are allowed; got starting token: {first_token!r}"
         )
 
-    match = _DANGEROUS_PATTERN.search(sql)
+    # Structure only: a semicolon or keyword inside a string literal is data.
+    structure = _strip_string_literals(sql)
+
+    if ";" in structure.rstrip().rstrip(";"):
+        raise ValueError(
+            "A semicolon may only close the query, not separate statements. "
+            "Send one SELECT at a time."
+        )
+
+    match = _DANGEROUS_PATTERN.search(structure)
     if match:
-        raise ValueError(f"Query contains forbidden keyword: {match.group(1).upper()}")
+        keyword = match.group(1).upper()
+        raise ValueError(
+            f"Query contains the forbidden keyword {keyword}. Only read queries are "
+            f"allowed. If {keyword} is part of a column name or a text value, put the "
+            f"value in single quotes or alias the column — the check ignores quoted text."
+        )
 
 
 def _build_connection_string() -> str:

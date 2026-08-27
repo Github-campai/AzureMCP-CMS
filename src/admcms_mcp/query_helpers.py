@@ -207,3 +207,50 @@ def subtract_months(iso: str, months: int) -> str:
         year += 1
     day = min(d.day, calendar.monthrange(year, month)[1])
     return date(year, month, day).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Marking database text as external content
+# ---------------------------------------------------------------------------
+
+#: Delimiters around text that came out of ADMCMS rather than from the user.
+#: Same pair the Campai Securitech MCP uses, so the convention reads the same
+#: across servers and one instruction covers both.
+EXTERNAL_OPEN = "⟦extern⟧"
+EXTERNAL_CLOSE = "⟦/extern⟧"
+
+#: Columns whose contents are typed by people into ADMCMS: product
+#: descriptions, customer and supplier names. Anything a model could read as an
+#: instruction arrives through one of these.
+#:
+#: Deliberately short. Codes, dates, amounts and warehouse letters cannot carry
+#: a sentence, and marking them would bury the output in delimiters. Values that
+#: are meant to be fed *back* to a tool — `get_lookups`, `get_filter_options` —
+#: are never marked, because a filter value wrapped in delimiters no longer
+#: matches anything.
+EXTERNAL_TEXT_COLUMNS = frozenset({"Searchname", "Description"})
+
+
+def mark_external(value: Any) -> Any:
+    """Wrap a value in the external-content delimiters. Non-strings pass through."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    if value.startswith(EXTERNAL_OPEN):
+        return value
+    return f"{EXTERNAL_OPEN}{value}{EXTERNAL_CLOSE}"
+
+
+def mark_external_rows(rows: Any, columns: frozenset[str] = EXTERNAL_TEXT_COLUMNS) -> Any:
+    """Mark the free-text columns of every row in place-safe fashion.
+
+    Returns the input unchanged when it is not a list of dicts, so callers can
+    hand it whatever a tool produced.
+    """
+    if not isinstance(rows, list):
+        return rows
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for column in columns & row.keys():
+            row[column] = mark_external(row[column])
+    return rows

@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # domein kan laten adverteren.
     public_base_url_aliases: list[str] = []
 
+    # Extra origins die CORS mag gebruiken, komma-gescheiden. Leeg = afgeleid
+    # van public_base_url + aliases + "null" (de admin-UI over file://). Zet
+    # "*" om terug te vallen op het oude gedrag als een browserclient breekt.
+    cors_allow_origins: list[str] = []
+
     # Database connection (non-secret parts; password comes from Key Vault)
     admcms_server: str = "cmsnl.database.windows.net"
     admcms_database: str = "ADMCMS-PRODUCTION-REPL01"
@@ -88,7 +93,7 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("public_base_url_aliases", mode="before")
+    @field_validator("cors_allow_origins", "public_base_url_aliases", mode="before")
     @classmethod
     def split_aliases(cls, v):
         """Split comma-separated string into a list of base URLs."""

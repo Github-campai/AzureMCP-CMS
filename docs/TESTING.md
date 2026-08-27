@@ -35,7 +35,7 @@ smoke test via curl (zie Optie 1 hieronder).
 az login
 $token = az account get-access-token --resource api://1e6983d3-f996-4581-9518-e6819b79ac6a --query accessToken -o tsv
 
-# Lijst van alle tools (auth-check + tool registry) — verwacht 21 tools
+# Lijst van alle tools (auth-check + tool registry) — verwacht 25 tools
 curl.exe -H "Authorization: Bearer $token" https://cms-mcp-app-prod.redcoast-c9b157ab.westeurope.azurecontainerapps.io/admin/tools | ConvertFrom-Json | Select-Object -ExpandProperty tools | Measure-Object | Select-Object Count
 
 # health_check tool via MCP — bewijst end-to-end (auth + MCP + DB-ping)

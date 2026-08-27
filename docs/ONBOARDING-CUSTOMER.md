@@ -112,3 +112,17 @@ Zie [`CLIENT-SETUP.md`](CLIENT-SETUP.md) voor configuratie per AI-tool.
 ## Vragen / problemen
 
 Contact: Janneke Post (`Janneke@campai.nl`)
+
+## Grote tenants: de `groups`-claim kan wegvallen
+
+Zit een gebruiker in meer dan ongeveer 200 Entra-groepen, dan laat Entra de
+`groups`-claim uit het token weg en zet er een verwijzing (`_claim_names` /
+`hasgroups`) voor in de plaats. De MCP haalt het lidmaatschap niet alsnog bij
+Graph op, dus voor zo iemand telt alleen de **users**-lijst van de allowlist.
+
+Symptoom: één gebruiker krijgt "User not on allowlist" terwijl collega's in
+dezelfde groep gewoon binnenkomen. De weigering zegt dat er sprake is van een
+overage; in de containerlogs staat dan ook een waarschuwing met de UPN.
+
+Oplossing: zet die persoon met zijn `oid` in de `users`-lijst van het
+`admcms-allowlist`-secret. Datzelfde geldt voor de `admins`-sectie.

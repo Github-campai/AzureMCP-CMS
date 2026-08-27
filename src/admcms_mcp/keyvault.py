@@ -25,12 +25,26 @@ def _client() -> SecretClient:
     return SecretClient(vault_url=settings.key_vault_uri, credential=credential)
 
 
+def _env_secrets_allowed() -> bool:
+    """Whether secrets may come from the environment instead of Key Vault.
+
+    Off unless `ALLOW_ENV_SECRETS` says otherwise. The override exists so a
+    developer can run against a local database without Key Vault access, but as
+    an unconditional feature it also means anyone who can set an environment
+    variable on the container can swap the database credentials. Production sets
+    none of these variables, so requiring the flag costs nothing there.
+    """
+    return os.environ.get("ALLOW_ENV_SECRETS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _env_override(name: str) -> str | None:
     """Local-dev only: if an env var matching the secret name exists, use it.
 
-    Maps `admcms-db-password` → `ADMCMS_DB_PASSWORD`. Returns None when unset.
-    Production deployments never set these env vars — secrets come from Key Vault.
+    Maps `admcms-db-password` → `ADMCMS_DB_PASSWORD`. Returns None when unset,
+    and always when `ALLOW_ENV_SECRETS` is not enabled.
     """
+    if not _env_secrets_allowed():
+        return None
     env_name = name.upper().replace("-", "_")
     return os.environ.get(env_name)
 
