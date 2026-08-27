@@ -278,17 +278,14 @@ met `resource_metadata` naar de https-metadata-URL, zodat een client de flow (op
 flowchart TD
     T{{"Laag 1 — Tenant<br/>tid ∈ ENTRA_ALLOWED_TENANTS?"}}
     T -- nee --> R401[401 Untrusted tenant]
-    T -- ja --> G{{"Laag 2a — CAMPAI_ALLOWED_GROUP<br/>gezet én in `groups`-claim?"}}
-    G -- ja --> OK1[Toegang: Campai group]
-    G -- nee/leeg --> KV{{"Laag 2b — Key Vault allowlist<br/>oid ∈ users  OF  groups ∩ allowlist.groups ≠ ∅"}}
+    T -- ja --> KV{{"Laag 2 — Key Vault allowlist<br/>oid ∈ users  OF  groups ∩ allowlist.groups ≠ ∅"}}
     KV -- ja --> OK2[Toegang: allowlist]
     KV -- nee --> R403[403 User not on allowlist]
     KV -. KV onbereikbaar .-> R403b[403 Allowlist unavailable]
 ```
 
 - **Laag 1 (tenant)** zit in `validate_jwt`. Instellen via env `ENTRA_ALLOWED_TENANTS` (komma-gescheiden). Een tenant tijdelijk blokkeren = tenant-id eruit halen + revision restart.
-- **Laag 2a** (`CAMPAI_ALLOWED_GROUP`, [`config.py`](../src/admcms_mcp/config.py)) is een optionele shortcut. **In productie is deze env var niet gezet** (staat niet in [`infra/resources.bicep`](../infra/resources.bicep)); de Campai-group loopt dus óók via de KV-allowlist.
-- **Laag 2b** leest Key Vault secret `admcms-allowlist` (JSON `{"users":[oid…],"groups":[oid…]}`), gecachet **5 minuten** in-process.
+- **Laag 2** leest Key Vault secret `admcms-allowlist` (JSON `{"users":[oid…],"groups":[oid…]}`), gecachet **5 minuten** in-process.
 
 ### 5.2 Groepen die nu toegang geven
 
@@ -488,7 +485,6 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `KEY_VAULT_URI` | ✔ | `https://cms-mcp-kv-prod.vault.azure.net/` | Secrets |
 | `ENTRA_APP_ID` | ✔ | `1e6983d3-f996-4581-9518-e6819b79ac6a` | Audience + DCR client_id |
 | `ENTRA_ALLOWED_TENANTS` | ✔ | `bf030cec-…,a92e7c27-…` | Laag-1 autorisatie |
-| `CAMPAI_ALLOWED_GROUP` | – | leeg (niet gezet in prod) | Optionele group-shortcut |
 | `ENTRA_AUTHORITY` | – | `organizations` | Authority voor OAuth-proxy |
 | `PUBLIC_BASE_URL` | – | `https://<container-app-fqdn>` (gezet door deploy-workflow / repo-var) | Extern zichtbare URL in metadata/icons |
 | `PUBLIC_BASE_URL_ALIASES` | – | `https://mcp-cms-adm.cmsnl.com` | Extra hostnames; elke bekende host beschrijft zichzelf in de OAuth-metadata, onbekende hosts vallen terug op `PUBLIC_BASE_URL` |
@@ -542,7 +538,7 @@ flowchart LR
 | 1 | ~~README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`.~~ | `README.md`, `server.py` | **Opgelost 2026-08-27**: `tool_count` telt nu `len(await mcp.list_tools())`, dus hij kan niet meer uit de pas lopen. Test-aantallen in README/CLAUDE.md gelijkgetrokken. |
 | 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py`, `infra/resources.bicep` | **Opgelost 2026-08-19** in de code (`AzureTableStore`, `AUDIT_STORE=azure_table` handmatig op de container app gezet) en **2026-08-27** in de infra: de bicep zei nog `local` + `/tmp/audit.db`, dus de eerstvolgende `az deployment group create` had prod teruggezet. Storage account, table, RBAC en env staan nu in de bicep, met een test die op die drift faalt. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
-| 4 | `CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad. | `config.py`, `auth.py` | Overbodig geworden nu de `groups`-claim werkt: de allowlist-groepen doen hetzelfde. Verwijderen bij volgende opruiming. |
+| 4 | ~~`CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad.~~ | `config.py`, `auth.py` | **Opgelost 2026-08-27**: verwijderd. De Campai-groep stond al in de allowlist, dus in productie verandert er niets; er is nu één plek waar toegang wordt besloten in plaats van twee. |
 | 14 | ~~Databasetekst ging ongemarkeerd naar het model (prompt-injectie via productomschrijving of klantnaam).~~ | `server.py`, `query_helpers.py` | **Opgelost 2026-08-27**: `⟦extern⟧`-markering op `Searchname`/`Description` + server-instructions. Zie §6. |
 | 15 | ~~`groups`-claim kon ontbreken zonder dat iemand het merkte.~~ | `auth.py` | **Opgelost 2026-08-27**: overage wordt herkend, gelogd en uitgelegd in de weigering. Zie §5.2c. |
 | 16 | ~~CORS stond op `*`.~~ | `server.py` | **Opgelost 2026-08-27**: eigen hostnames + `null`; `CORS_ALLOW_ORIGINS` als noodklep. |
@@ -584,6 +580,7 @@ Werk bovenaan de regel *"Laatst geverifieerd tegen commit …"* bij.
 
 | Datum | Commit | Wat |
 |---|---|---|
+| 2026-08-27 | (deze commit) | §5.1 `CAMPAI_ALLOWED_GROUP` verwijderd (diagram + toelichting), §9 env-tabel, §11 item 4. |
 | 2026-08-27 | (deze commit) | §5.2c groups-overage, §6 externe-inhoudmarkering + server-instructions, §7 `validate_query`, §9 twee env-vars, §11 items 1, 14–18. |
 | 2026-08-27 | (deze commit) | §3 niets blokkeert de event loop, §7 cache-LRU + concurrency-rem, §9 twee env-vars, §11 items 5, 10, 11, 13. |
 | 2026-08-27 | (deze commit) | §8 bewaartermijn + opruimlus, §9 `AUDIT_RETENTION_DAYS`, §10 audit-storage in bicep, §11 items 2 en 12. |

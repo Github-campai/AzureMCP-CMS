@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     # Entra app registration identifiers
     entra_app_id: str
     entra_allowed_tenants: list[str]
-    campai_allowed_group: str = ""  # optional; empty disables group check
 
     # Authority segment the OAuth proxy sends users to. "organizations" matches
     # this app's AzureADMultipleOrgs audience: any work/school tenant may sign
