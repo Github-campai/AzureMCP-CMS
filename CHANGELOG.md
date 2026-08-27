@@ -8,6 +8,24 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — Opruiming: `CAMPAI_ALLOWED_GROUP` weg
+
+Een tweede manier om dezelfde beslissing te nemen: naast de allowlist in Key
+Vault kon één Entra-groep via de env-var `CAMPAI_ALLOWED_GROUP` rechtstreeks
+toegang geven. Die variabele stond niet in de bicep en is in productie nooit
+gezet, dus het pad werd nooit doorlopen — de Campai-groep komt gewoon binnen via
+de `groups`-lijst van de allowlist.
+
+Weg dus. Het scheelt een tweede plek om te kijken als iemands toegang niet klopt.
+Omdat de env-var nergens gezet is, verandert er in productie niets: de conditie
+begon met `settings.campai_allowed_group and …` en die was altijd leeg.
+
+De test die het oude pad afdekte toetst nu de route die werkelijk gebruikt
+wordt (groep in de allowlist), en er is een test bij die vaststelt dat het
+zetten van `CAMPAI_ALLOWED_GROUP` niets meer doet.
+
+---
+
 ## 2026-08-27 — Hardening ronde 4: injectie, groepen, CORS, SQL-check en opruiming
 
 ### Databasetekst ging ongemarkeerd naar het model

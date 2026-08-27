@@ -135,7 +135,7 @@ uvicorn admcms_mcp.server:app --port 8000
 
 Test: `curl http://localhost:8000/healthz`.
 
-Tests: `pytest -v --cov=admcms_mcp` (442 tests). Lint: `ruff check . && ruff format --check .`
+Tests: `pytest -v --cov=admcms_mcp` (443 tests). Lint: `ruff check . && ruff format --check .`
 Beide draaien in CI (`.github/workflows/ci.yml`) op elke push en PR.
 
 ## CI/CD

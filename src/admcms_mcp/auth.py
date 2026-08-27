@@ -205,10 +205,9 @@ def _overage_note(claims: dict[str, Any]) -> str:
 def check_access(claims: dict[str, Any]) -> None:
     """Raise Forbidden unless the claim subject is on the allowlist.
 
-    Order: (1) Campai group membership, (2) Key Vault JSON allowlist.
-    Tenant check already happened in validate_jwt.
+    One list decides: the JSON in Key Vault, by user id or by group. The tenant
+    check already happened in `validate_jwt`.
     """
-    settings = get_settings()
     oid = claims.get("oid", "")
     groups = claims.get("groups") or []
     upn = claims.get("upn", "")
@@ -220,11 +219,6 @@ def check_access(claims: dict[str, Any]) -> None:
             upn,
             oid,
         )
-
-    # Campai group allowlist (Entra security group in Campai tenant)
-    if settings.campai_allowed_group and settings.campai_allowed_group in groups:
-        logger.info("Access granted via Campai group: upn=%s oid=%s", upn, oid)
-        return
 
     # Key Vault allowlist
     try:
