@@ -8,6 +8,24 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — `ruff` exact gepind, CI weer groen
+
+De format-check faalde op `CHANGELOG.md`. Niet op de code: ruff formatteert ook
+Python-codeblokken **in Markdown**, en het voorbeeld in de samenvatting hierboven
+had uitgelijnde trailing comments die hij wil inkorten tot twee spaties.
+
+De echte oorzaak is dat `ruff` ongepind stond (`>=0.4.0`). Lokaal stond 0.16.4,
+CI installeerde 0.16.5, en die versie behandelt Markdown anders. Dan is de
+format-check niet reproduceerbaar: groen op je eigen machine, rood in CI, zonder
+dat er iets aan de code veranderd is.
+
+Nu `ruff==0.16.5`, exact. Een linter mag meebewegen, een *formatter* niet:
+zijn uitvoer is de norm waar de check op toetst. Bumpen kan gewoon, maar dan in
+één commit met `ruff format .` over de hele repo — dat staat nu ook in
+`CLAUDE.md`.
+
+---
+
 ## 2026-08-27 — Ronde van 27 augustus (samenvatting)
 
 Zes wijzigingen op één dag, hieronder elk apart beschreven. Dit blok vertelt wat
@@ -23,12 +41,12 @@ Een nieuwe tool registreer je nog steeds in `server.py` met `@mcp.tool()` +
 
 ```python
 @mcp.tool()
-async def get_iets(start_date: str) -> dict:      # async def, niet def
+async def get_iets(start_date: str) -> dict:  # async def, niet def
     """..."""
-    return await _audited(                         # await
+    return await _audited(  # await
         "get_iets",
         {"start_date": start_date},
-        lambda: _get_iets(start_date),             # de pure functie blijft synchroon
+        lambda: _get_iets(start_date),  # de pure functie blijft synchroon
     )
 ```
 
