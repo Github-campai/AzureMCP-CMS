@@ -264,7 +264,8 @@ async def test_token_forwards_entra_error_status(app_client):
     with patch("admcms_mcp.oauth.httpx.AsyncClient", return_value=ctx):
         async with app_client(build_app()) as client:
             response = await client.post(
-                "/token", data={"grant_type": "authorization_code", "code": "bad"}
+                "/token",
+                data={"grant_type": "authorization_code", "code": "bad", "client_id": APP_ID},
             )
     assert response.status_code == 400
     assert response.json()["error"] == "invalid_grant"
@@ -285,6 +286,94 @@ async def test_token_rewrites_scope_on_refresh(app_client):
             )
     sent = instance.post.call_args[1]["data"]
     assert f"api://{APP_ID}/admcms.read" in sent["scope"]
+
+
+# --------------------------------------------------------------------------
+# Proxy hardening — the proxy only brokers what we advertise
+# --------------------------------------------------------------------------
+
+
+async def test_authorize_refuses_a_foreign_client_id(app_client):
+    """Otherwise /authorize is an open relay: our domain, someone else's app."""
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "11111111-2222-3333-4444-555555555555",
+                "redirect_uri": "https://attacker.example/callback",
+                "scope": "admcms.read",
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_request"
+    assert "location" not in response.headers
+
+
+async def test_authorize_requires_a_client_id(app_client):
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/authorize", params={"response_type": "code", "scope": "admcms.read"}
+        )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_request"
+
+
+async def test_authorize_accepts_the_application_id_uri_form(app_client):
+    async with app_client(build_app()) as client:
+        response = await client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": f"api://{APP_ID}",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "scope": "admcms.read",
+            },
+        )
+    assert response.status_code == 302
+
+
+@pytest.mark.parametrize("grant_type", ["password", "client_credentials", "implicit", ""])
+async def test_token_refuses_grant_types_we_do_not_advertise(app_client, grant_type):
+    ctx, instance = _mock_httpx(200, b"{}")
+    with patch("admcms_mcp.oauth.httpx.AsyncClient", return_value=ctx):
+        async with app_client(build_app()) as client:
+            response = await client.post(
+                "/token",
+                data={
+                    "grant_type": grant_type,
+                    "client_id": APP_ID,
+                    "username": "someone",
+                    "password": "hunter2",
+                },
+            )
+    assert response.status_code == 400
+    assert response.json()["error"] == "unsupported_grant_type"
+    instance.post.assert_not_called()  # nothing may reach Entra
+
+
+async def test_token_refuses_a_foreign_client_id(app_client):
+    ctx, instance = _mock_httpx(200, b"{}")
+    with patch("admcms_mcp.oauth.httpx.AsyncClient", return_value=ctx):
+        async with app_client(build_app()) as client:
+            response = await client.post(
+                "/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": "the-code",
+                    "client_id": "11111111-2222-3333-4444-555555555555",
+                },
+            )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_request"
+    instance.post.assert_not_called()
+
+
+def test_advertised_grant_types_match_what_the_proxy_accepts():
+    """Metadata and enforcement must not drift apart."""
+    from admcms_mcp.oauth import ALLOWED_GRANT_TYPES
+
+    assert frozenset({"authorization_code", "refresh_token"}) == ALLOWED_GRANT_TYPES
 
 
 # --------------------------------------------------------------------------

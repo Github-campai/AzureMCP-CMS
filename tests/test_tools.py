@@ -136,7 +136,9 @@ class TestSearchProducts:
         mock_execute.side_effect = RuntimeError("DB down")
         result = search_products("filter")
         assert result["data"] == []
-        assert "DB down" in result["error"]
+        # The driver text stays server-side; the client gets a reference only.
+        assert "DB down" not in result["error"]
+        assert "reference" in result["error"]
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_paging_uses_offset_fetch(self, mock_execute):
@@ -1700,7 +1702,8 @@ class TestGetDeadStockErrorHandling:
         result = get_dead_stock()
         assert result["data"] == []
         assert result["error"] is not None
-        assert "DB down" in result["error"]
+        assert "DB down" not in result["error"]
+        assert "reference" in result["error"]
 
 
 class TestGetFilterOptions:
@@ -1760,7 +1763,8 @@ class TestGetFilterOptions:
         assert result["country"] == []
         assert result["make"] == []
         assert result["productgroup"] == []
-        assert "DB down" in result["error"]
+        assert "DB down" not in result["error"]
+        assert "reference" in result["error"]
 
     @patch("admcms_mcp.tools.execute_query_params")
     def test_one_slow_dim_does_not_blank_the_others(self, mock_execute):

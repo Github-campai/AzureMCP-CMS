@@ -8,6 +8,49 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-27 — Hardening ronde 1: OAuth-proxy en foutmaskering
+
+### De OAuth-proxy brokerde meer dan we adverteren
+
+`/authorize` gaf de querystring één op één door aan Entra en `/token` de hele
+form-body. Alleen `resource` werd verwijderd en `scope` herschreven. Daarmee
+was `/authorize` op `admcms.campai.nl` een open relay: een aanvaller bouwt een
+inlog-URL op ons domein die consent vraagt voor zijn eigen app, en de gebruiker
+ziet onze hostname in de adresbalk. Voor `/token` gold hetzelfde voor grant
+types die we nooit hebben bedoeld te ondersteunen.
+
+- `client_id` moet nu de app-id zijn die `/register` uitdeelt (of de
+  `api://`-vorm). Een afwijkende waarde geeft `400 invalid_request` — een
+  weigering, geen stille correctie, want een client die iets anders stuurt heeft
+  een configuratieprobleem dat je wilt zien.
+- `grant_type` is beperkt tot `authorization_code` en `refresh_token`, precies
+  wat de metadata adverteert. `password` en `client_credentials` halen Entra
+  niet meer.
+- `redirect_uri` toetsen we bewust niet aan een eigen lijst; de afweging staat
+  in `docs/ARCHITECTUUR.md` §4.2.
+
+### Rauwe databasefouten gingen naar de klant
+
+Op 22 plekken in `tools.py` en in de DB-ping van `health_check` ging
+`f"Execution error: {e}"` terug naar de client. pyodbc noemt daarin de driver,
+de servernaam (`cmsnl.database.windows.net`) en soms een stuk SQL — dat belandde
+in het gespreksvenster van de klant en in de logs van hun MCP-client.
+
+Nieuw: `src/admcms_mcp/errors.py`. `client_error(exc)` zet de volledige tekst in
+het log en op de audit-entry, en geeft de client een neutrale zin met een
+referentie. Die referentie is de id van de audit-entry, dus
+`GET /admin/audit/{referentie}` levert het hele verhaal — de beheerder kan het
+opzoeken, de klant ziet het niet.
+
+`health_check` draait zijn databaseprobe nu binnen `_audited`, anders had een
+mislukte ping geen audit-entry om naar te verwijzen.
+
+Tests: 13 nieuwe (`tests/test_errors.py`, uitbreiding van `tests/test_oauth.py`).
+Drie bestaande tests in `tests/test_tools.py` toetsten op de rauwe tekst en
+toetsen nu op de afwezigheid ervan.
+
+---
+
 ## 2026-08-18 / 19 — OAuth, autorisatie, audit en CI
 
 Grote ronde. Hieronder eerst wat het voor je dagelijkse werk betekent, daarna per
