@@ -92,6 +92,29 @@ Zie [`CLIENT-SETUP.md`](CLIENT-SETUP.md) voor configuratie per AI-tool.
 
 ---
 
+## Gastgebruikers
+
+Een gast in jullie tenant (`userType=Guest`, iemand van buiten die je hebt
+uitgenodigd) kan de MCP gebruiken, mits hij verbinding maakt via **jullie eigen
+hostname** — niet die van Campai.
+
+Dat is geen voorkeur maar noodzaak. De aanmeldlink van de Campai-hostname zegt
+tegen Entra "zoek de thuistenant van deze persoon op", en voor een gast is dat
+zijn eigen werkgever. Zijn token draagt dan die tenant en wordt geweigerd. De
+klanthostname is gekoppeld aan jullie tenant-ID, waardoor Entra hem aanmeldt in
+*jullie* directory — met zijn gastobject en zijn groepslidmaatschappen.
+
+Verder werkt hij als iedere andere gebruiker: zet hem in `CMS-MCP-Users` en hij
+is binnen. Jullie conditional access geldt gewoon voor hem, MFA incluis.
+
+Werkt het niet, kijk dan naar:
+- staat de app op **Assignment required**? Dan moet de groep aan de enterprise
+  application `CMS-MCP-API` zijn toegewezen
+- raakt een conditional access policy hem die een compliant device eist? Een
+  gast heeft zelden een device in jullie beheer
+
+---
+
 ## Toegang intrekken
 
 | Scope | Hoe |

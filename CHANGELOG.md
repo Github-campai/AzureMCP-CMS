@@ -8,6 +8,61 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-31 — Gasten kunnen erin: de authority hangt nu aan de hostname
+
+Een gast van CMS Lelystad kwam er niet in. Hij meldde zich netjes aan bij
+Microsoft, kreeg een token, en werd vervolgens bij elke call geweigerd.
+
+De oorzaak zit in één woord in de aanmeld-URL. `/authorize` stuurde iedereen
+naar `login.microsoftonline.com/organizations`, en dat betekent letterlijk: "een
+willekeurige werk-tenant — zoek zelf uit waar deze persoon thuishoort". Voor een
+medewerker klopt dat. Voor een gast niet: die hoort thuis bij zijn eigen
+werkgever, dus daar meldt Entra hem aan. Zijn token draagt die tenant,
+`validate_jwt` weigert hem op `Untrusted tenant`, en zijn lidmaatschap van
+`SG-CMS-MCP-Users` komt nooit aan bod.
+
+Met GDAP in de klanttenant nagekeken, en daar bleek alles al goed te staan:
+
+- `appRoleAssignmentRequired` op de app: `false`
+- de gast: `accountEnabled`, uitnodiging geaccepteerd, en **al lid** van
+  `SG-CMS-MCP-Users`
+- zijn aanmeldgeschiedenis daar: twintig keer Power BI, geslaagd — en **geen
+  enkele** aanmelding voor `CMS-MCP-API`, terwijl hij het die avond twee keer
+  probeerde
+
+Die laatste regel is het bewijs: zijn pogingen kwamen nooit in die tenant aan.
+En Power BI werkt wél voor hem omdat dat een tenant-specifieke aanmeldlink
+uitdeelt — precies wat wij niet deden.
+
+`authority_for_request()` kiest de authority nu op hostname, via
+`ENTRA_AUTHORITY_BY_HOST` (`host=tenant-id`, komma-gescheiden). De
+klanthostname meldt aan bij de klanttenant, de onze blijft op `organizations`.
+Per hostname en niet globaal, want één authority voor allebei zou de andere
+partij uit haar eigen directory duwen.
+
+Drie dingen die bij het bouwen de aandacht vroegen:
+
+- `/authorize` en `/token` leiden de authority allebei uit dezelfde request af.
+  Lopen ze uiteen, dan is de code niet inwisselbaar en breekt élke aanmelding —
+  niet alleen die van gasten. Een test pint dat vast.
+- De hostname komt uit de request en is dus door de beller te sturen. Hij dient
+  uitsluitend als sleutel in de configuratie en belandt nooit in de URL; een
+  vervalste Host-header kiest hooguit iets wat een beheerder al had ingesteld,
+  en de tenantcontrole in `validate_jwt` staat er nog steeds achter.
+- Een waarde die geen tenant-ID of bekend sleutelwoord is, wordt genegeerd en
+  gelogd in plaats van in de URL gezet. Een typefout stuurt niemand naar een
+  aanmeldpagina die niet bestaat.
+
+Zonder de env-var verandert er niets: leeg = het gedrag van hiervoor.
+
+Wat dit oplevert: de klant beheert zijn gasten zelf, via dezelfde groep als zijn
+eigen mensen. Geen tenant erbij in `ENTRA_ALLOWED_TENANTS`, geen Key
+Vault-bewerking per persoon, en — belangrijker — de conditional access van de
+klant blijft op hem van toepassing. Bij de omgekeerde route (zijn thuistenant
+onboarden) was hij buiten élk beleid van de klant gevallen.
+
+---
+
 ## 2026-08-31 — Opvolging van de gezondheidscheck: een margefout, minder ruis, meer spoor
 
 Wat er uit de gezondheidscheck van 31 augustus kwam. Een echte fout in

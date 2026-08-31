@@ -107,7 +107,7 @@ src/admcms_mcp/
 ├── branding.py      Icon-serving (/icon.png + aliases) en serverInfo.icons
 └── assets/          icon.png
 
-tests/               471 testfuncties (pytest, asyncio_mode=auto)
+tests/               476 testfuncties (pytest, asyncio_mode=auto)
 infra/               Bicep: Container App, ACR, KV, MI, App Insights, LAW
 scripts/             PowerShell: Entra-app, redirect-URIs, KV seed, deploy, rotate
 .github/workflows/   ci.yml, deploy-to-aca.yml, security-scan.yml
@@ -218,7 +218,7 @@ sequenceDiagram
     participant U as Gebruiker
     participant C as MCP-client
     participant S as MCP-server (oauth.py)
-    participant E as Entra ID (login.microsoftonline.com/organizations)
+    participant E as Entra ID (login.microsoftonline.com/&lt;authority&gt;)
 
     C->>S: POST /mcp (geen token)
     S-->>C: 401, WWW-Authenticate: Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"
@@ -231,7 +231,7 @@ sequenceDiagram
     C->>U: open browser → GET /authorize?client_id&redirect_uri&code_challenge&scope=admcms.read&resource=…
     U->>S: GET /authorize
     S-->>U: 302 → E/authorize  (scope herschreven naar api://<app-id>/admcms.read offline_access; `resource` verwijderd)
-    U->>E: inloggen (eigen tenant, MFA etc.)
+    U->>E: inloggen (authority bepaalt de directory — zie 4.2; MFA etc.)
     E-->>C: redirect_uri?code=…
     C->>S: POST /token (grant_type=authorization_code, code, code_verifier, client_id)
     S->>E: POST E/token (zelfde body, scope herschreven, `resource` verwijderd)
@@ -249,7 +249,11 @@ sequenceDiagram
 - `/token` logt bij fouten alleen `grant_type`, `client_id`, `scope` — nooit code/refresh_token.
 - **De proxy brokert alleen wat we adverteren.** `client_id` moet de app-id zijn die `/register` uitdeelt (`ENTRA_APP_ID`, of de `api://`-vorm daarvan); een andere waarde geeft `400 invalid_request` in plaats van een redirect. Zonder die pin is `/authorize` op ons domein een open relay: iemand bouwt een inlog-URL die er uitziet als de onze maar consent vraagt voor zijn eigen app. `/token` accepteert daarnaast alleen `grant_type` uit `ALLOWED_GRANT_TYPES` (`authorization_code`, `refresh_token`) — precies wat `authorization_server_metadata()` adverteert; al het andere is `400 unsupported_grant_type` en bereikt Entra niet.
 - **`redirect_uri` wordt bewust niet getoetst** aan een eigen lijst. Entra weigert al elke redirect die niet op de app geregistreerd staat, en de verzameling MCP-client-callbacks is open (`https://claude.ai/…`, `vscode://…`, `cursor://…`, `http://127.0.0.1:<willekeurige poort>/`); een lokale allowlist zou nieuwe clients breken zonder een garantie toe te voegen die Entra niet al geeft.
-- `ENTRA_AUTHORITY` (default `organizations`) bepaalt naar welke authority `/authorize` en `/token` gaan; tenant-beperking gebeurt daarna in `validate_jwt`.
+- **Authority per hostname (`authority_for_request()`).** De authority is het segment in het pad van de Entra-aanmeld-URL en bepaalt in *welke directory* iemand wordt aangemeld. `ENTRA_AUTHORITY` (default `organizations`) is de basis; `ENTRA_AUTHORITY_BY_HOST` overschrijft die per hostname (`host=tenant-id`, komma-gescheiden).
+  Dit is wat **gasten** mogelijk maakt. `organizations` betekent "zoek de thuistenant van deze persoon op", en voor een gast is dat zijn eigen werkgever — niet de tenant waar hij is uitgenodigd. Zijn token draagt dan die `tid`, `validate_jwt` weigert hem, en zijn lidmaatschap van een groep in de klanttenant komt nooit aan bod. Een tenant-ID in het pad meldt hem wél aan in die directory, gastobject en groepen incluis. Het is precies wat Power BI doet met zijn tenant-specifieke links.
+  Per hostname en niet globaal: de app antwoordt op een Campai- en een klanthostname, en één authority voor allebei zou de ene partij uit haar eigen directory duwen.
+  `/authorize` en `/token` leiden hem allebei uit dezelfde request af — lopen ze uiteen, dan is de code niet inwisselbaar en breekt élke aanmelding. Een test pint dat vast.
+  De hostname komt uit de request en is dus door de beller te sturen, maar dient uitsluitend als *sleutel* in de configuratie: hij belandt nooit in de URL. Een vervalste Host-header kiest hooguit een authority die een beheerder al had ingesteld, en `validate_jwt` controleert de tenant daarna alsnog. Een waarde die geen tenant-ID of bekend sleutelwoord is, wordt genegeerd en gelogd.
 - Redirect-URIs van clients moeten in de Entra-app onder **publicClient** ("Mobile and desktop") staan — [`scripts/add-client-redirect-uris.ps1`](../scripts/add-client-redirect-uris.ps1). Fout `AADSTS50011` = URI ontbreekt.
 
 ### 4.3 JWT-validatie (`auth.validate_jwt`)
@@ -544,6 +548,7 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `ROLE_CLAIM` | – | `roles` | JWT-claim met de app roles |
 | `ROLE_DEFAULT` | – | `viewer` | Rol zonder toegewezen app-rol |
 | `ROLE_ENFORCEMENT` | – | `warn` | `off` / `warn` (loggen) / `enforce` |
+| `ENTRA_AUTHORITY_BY_HOST` | – | *(leeg)* | `host=tenant-id`, komma-gescheiden. Bepaalt in welke Entra-directory een gebruiker op die hostname wordt aangemeld. Nodig voor **gasten**: `organizations` meldt een gast aan in zijn eigen thuistenant, niet in die waar hij gast is. Leeg = overal `ENTRA_AUTHORITY` |
 | `AZURE_SDK_LOG_LEVEL` | – | `WARNING` | Log-niveau van de Azure-SDK's. De `HttpLoggingPolicy` van azure-core logt op INFO van elke Key Vault- en Table-call de volledige request- en response-headers; op `WARNING` verdwijnt dat. Zet op `INFO`/`DEBUG` om een Azure-call uit te pluizen |
 | `DEV_ROLES` | – | `admin` | Rollen bij `AUTH_DISABLED=true`, alleen lokaal |
 | `MAX_CONCURRENT_QUERIES_PER_USER` | – | `3` | Gelijktijdige tool-calls per gebruiker; `0` schakelt de rem uit |
@@ -585,7 +590,7 @@ flowchart LR
 | 1 | ~~README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`.~~ | `README.md`, `server.py` | **Opgelost 2026-08-27**: `tool_count` telt nu `len(await mcp.list_tools())`, dus hij kan niet meer uit de pas lopen. Test-aantallen in README/CLAUDE.md gelijkgetrokken. |
 | 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py`, `infra/resources.bicep` | **Opgelost 2026-08-19** in de code (`AzureTableStore`, `AUDIT_STORE=azure_table` handmatig op de container app gezet) en **2026-08-27** in de infra: de bicep zei nog `local` + `/tmp/audit.db`, dus de eerstvolgende `az deployment group create` had prod teruggezet. Storage account, table, RBAC en env staan nu in de bicep, met een test die op die drift faalt. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
-| 21 | Gastgebruikers (`userType=Guest`) komen er niet in: de OAuth-proxy stuurt iedereen naar `login.microsoftonline.com/organizations`, en Entra logt een gast dan in op zijn **eigen** thuistenant. Het token draagt dus die `tid`, niet die van de tenant waar hij gast is, en `validate_jwt` weigert hem op `Untrusted tenant`. Lidmaatschap van `SG-CMS-MCP-Users` helpt niet — die controle wordt nooit bereikt. | `oauth.py`, `auth.py` | Vastgesteld 2026-08-31 bij een gast in de CMS-tenant. Drie uitwegen: een echt account in de resource-tenant (eenvoudigst), volledige onboarding van zijn thuistenant, of `/authorize` een tenant-specifieke authority laten gebruiken zodat gasten in de juiste tenant landen. Nog geen keuze gemaakt. |
+| 21 | ~~Gastgebruikers (`userType=Guest`) komen er niet in: `/organizations` meldt een gast aan in zijn eigen thuistenant, dus het token draagt de verkeerde `tid` en `validate_jwt` weigert hem — lidmaatschap van de groep in de klanttenant wordt nooit bereikt.~~ | `oauth.py` | **Opgelost 2026-08-31**: `authority_for_request()` kiest de authority op hostname (`ENTRA_AUTHORITY_BY_HOST`), zodat de klanthostname aanmeldt bij de klanttenant. Vastgesteld met GDAP in de CMS-tenant: de gast staat al in `SG-CMS-MCP-Users`, `appRoleAssignmentRequired` is `false`, en zijn aanmeldgeschiedenis daar bevat wél Power BI maar géén enkele aanmelding voor `CMS-MCP-API` — zijn pogingen kwamen nooit in die tenant aan. |
 | 22 | ~~`get_margin_report` viel om bij een uitsplitsing met vorig jaar erbij: `delta_turnover` trok een float van een `Decimal` af (`TypeError`), en waar het niet omviel kwam omzet als de string "1000.50" bij het model aan.~~ | `tools.py` | **Opgelost 2026-08-31**: `_enrich_margin_row` normaliseert `turnover` en `cost` naar float, zoals de rest van `tools.py` die kolommen al behandelde. Raakte een echte gebruiker 4x op 28-08. De tests mockten `_fetch_margin` uitsluitend met floats, waardoor het `Decimal`-pad nooit werd uitgevoerd; twee tests dekken dat nu. |
 | 20 | Entra weigert periodiek een `refresh_token`-grant (17× op 31-08): de client krijgt een 401 en logt opnieuw in, dus zelfherstellend maar zichtbaar voor de gebruiker. De oorzaak is nog onbekend — de weigering verschijnt **niet** in de Entra sign-in logs (ook niet onder `nonInteractiveUser`), wat wijst op een afwijzing op protocolniveau in plaats van een mislukte sign-in. | `oauth.py` | **Diagnose ingebouwd 2026-08-31**: `_entra_error_summary` logt nu `error`, `error_codes`, de AADSTS-tekst en `correlation_id` uit het antwoord van Entra. Daarvóór werd alleen de statuscode gelogd en ging het antwoord ongelezen naar de client. Volgende keer noemt de log de reden zelf. |
 | 19 | Rollen per tool staan op `ROLE_ENFORCEMENT=warn`: er wordt nog niets geweigerd, alleen gelogd. | `roles.py` | Bewust, tot de app roles in Entra zijn toegewezen. Omzetten naar `enforce` is één env-var. |
