@@ -8,6 +8,32 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-31 — `mcp` terug op `<2`: de 2.x-bump brak de hele server
+
+Dependabot verruimde de constraint van `mcp[cli]<2` naar `<3`. CI installeert
+met `pip install -e ".[dev]"`, niet uit de lockfile, en pakte dus `mcp 2.1.1`.
+Daarop startte de server niet meer:
+
+    ModuleNotFoundError: No module named 'mcp.server.fastmcp'
+    This is mcp 2.x, where FastMCP was renamed to MCPServer
+
+Elf testmodules faalden al bij het importeren, de deploy stopte, en zowel die
+PR als de eerstvolgende merge kwam niet in productie. De draaiende revisie is
+al die tijd gezond gebleven — er is niets kapot gedeployd, er is alleen niets
+gedeployd.
+
+Constraint terug op `<2`, met de reden in de regel zelf.
+
+Belangrijker is de tweede helft: Dependabot krijgt nu een `ignore` voor
+major-updates van `mcp`. Een major van deze afhankelijkheid is geen update maar
+een migratie — `FastMCP` heet `MCPServer` en zit in een andere module, dus
+`server.py` moet er in zijn geheel doorheen. Zoiets hoort niet ongemerkt via
+een dependency-PR binnen te komen. Patch- en minor-updates komen gewoon door.
+
+De migratie naar mcp 2.x blijft staan als werk voor later.
+
+---
+
 ## 2026-08-31 — Gasten kunnen erin: de authority hangt nu aan de hostname
 
 Een gast van CMS Lelystad kwam er niet in. Hij meldde zich netjes aan bij
