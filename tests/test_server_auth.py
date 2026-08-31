@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
+from admcms_mcp.auth import InvalidToken
 from admcms_mcp.server import build_app
 
 
@@ -129,3 +130,53 @@ async def test_index_escapes_error_parameters(app_client):
     assert response.status_code == 400
     assert "<img src=x" not in response.text
     assert "<b>nope</b>" not in response.text
+
+
+async def test_rejected_token_says_in_the_log_why(app_client, caplog):
+    """Een geweigerd token liet eerst geen enkel spoor na.
+
+    Aanleiding: een gastgebruiker kreeg netjes een token van Entra maar werd bij
+    elke call geweigerd, en in de logs was daar niets van terug te vinden - de
+    reden moest worden afgeleid uit de omliggende requests. De boodschap van
+    `validate_jwt` noemt de tenant of de audience die niet klopte; juist dat
+    onderscheidt een gast op de verkeerde tenant van een verlopen token.
+    """
+    with (
+        patch(
+            "admcms_mcp.server.validate_jwt",
+            side_effect=InvalidToken("Untrusted tenant: 9f1c-vreemde-tenant"),
+        ),
+        caplog.at_level("WARNING", logger="admcms_mcp.server"),
+    ):
+        app = build_app()
+        async with app_client(app) as client:
+            response = await client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
+                headers={"Authorization": "Bearer een.of.ander.token"},
+            )
+
+    assert response.status_code == 401
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "Untrusted tenant" in logged
+    assert "9f1c-vreemde-tenant" in logged
+    # Het token zelf hoort er niet in.
+    assert "een.of.ander.token" not in logged
+
+
+async def test_the_usual_tokenless_probe_stays_out_of_the_log(app_client, caplog):
+    """Elke MCP-client begint zonder token om de WWW-Authenticate op te halen.
+
+    Dat zijn er tientallen per uur en het is geen fout. Zou dat pad ook loggen,
+    dan verdrinkt de weigering die er wel toe doet.
+    """
+    with caplog.at_level("WARNING", logger="admcms_mcp.server"):
+        app = build_app()
+        async with app_client(app) as client:
+            response = await client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
+            )
+
+    assert response.status_code == 401
+    assert not [r for r in caplog.records if "Rejected token" in r.getMessage()]

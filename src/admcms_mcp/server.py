@@ -158,6 +158,16 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             try:
                 claims = await asyncio.to_thread(validate_jwt, token)
             except InvalidToken as e:
+                # A rejected token used to leave no trace at all: the caller got
+                # a 401 and the log stayed silent, so "it does not work for this
+                # user" had to be reconstructed from the surrounding requests.
+                # The message names the reason and the value that caused it
+                # (`Untrusted tenant: <tid>`, `Wrong audience: got ...`), which
+                # is exactly what distinguishes a guest signing in on the wrong
+                # tenant from an expired token. `%r` and the length cap because
+                # the values come from the token: an attacker must not be able
+                # to forge a log line with them.
+                logger.warning("Rejected token on %s: %r", request.url.path, str(e)[:200])
                 return self._unauthorized(request, str(e))
 
             try:
@@ -1461,7 +1471,49 @@ def _cors_origins() -> list[str]:
     return list(dict.fromkeys(origin for origin in origins if origin))
 
 
+#: Loggers of the Azure SDKs that are verbose out of all proportion. The
+#: `HttpLoggingPolicy` (in `azure.core.pipeline.policies._universal`) logs, at
+#: INFO, the full request and response headers of *every* call — and
+#: `keyvault.get_secret` runs on a five-minute cache, so this alone accounted
+#: for roughly half of the container logs. `azure.identity` is nearly as
+#: talkative about token acquisition.
+#:
+#: The package logger rather than `_universal` itself: child loggers inherit
+#: the level, so a future move of that policy inside azure-core cannot quietly
+#: turn the noise back on. Warnings and errors still come through; only the
+#: play-by-play is gone.
+_NOISY_AZURE_LOGGERS = (
+    "azure.core.pipeline.policies",
+    "azure.identity",
+)
+
+
+def _quiet_azure_sdk_logging() -> None:
+    """Raise the Azure SDK log level to `AZURE_SDK_LOG_LEVEL` (default WARNING).
+
+    Set the env var to `INFO` or `DEBUG` — no redeploy needed, it is a plain
+    container-app setting — when an Azure call actually needs to be picked
+    apart.
+    """
+    try:
+        configured = get_settings().azure_sdk_log_level
+    except Exception:  # settings incomplete (tests / early boot)
+        configured = "WARNING"
+
+    level = logging.getLevelNamesMapping().get(configured.strip().upper())
+    if level is None:
+        logger.warning(
+            "AZURE_SDK_LOG_LEVEL=%r is not a log level; falling back to WARNING", configured
+        )
+        level = logging.WARNING
+
+    for name in _NOISY_AZURE_LOGGERS:
+        logging.getLogger(name).setLevel(level)
+
+
 def build_app() -> Starlette:
+    _quiet_azure_sdk_logging()
+
     try:
         if get_settings().auth_disabled:
             logger.warning(

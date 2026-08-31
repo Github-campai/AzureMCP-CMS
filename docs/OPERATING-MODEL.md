@@ -75,7 +75,7 @@
   bevraagde, niet over inhoud van resultaten (resultaten worden gestreamd naar
   de gebruiker, niet opgeslagen op onze server buiten transient memory).
 - We managen geen CMS-gebruikersaccounts (dat doet CMS IT-admin in hun tenant).
-- We schrijven niet naar ADMCMS — alle 20 tools zijn SELECT-only.
+- We schrijven niet naar ADMCMS — alle 25 tools zijn SELECT-only.
 
 ## Tweetraps escalatie
 

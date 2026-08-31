@@ -6,11 +6,12 @@ but a URL: discover, register, authorize, exchange.
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from starlette.requests import Request
 from starlette.responses import Response
 
-from admcms_mcp.oauth import _rewrite_scope, resource_uri
+from admcms_mcp.oauth import _entra_error_summary, _rewrite_scope, resource_uri
 from admcms_mcp.server import build_app
 
 APP_ID = "1e6983d3-f996-4581-9518-e6819b79ac6a"
@@ -519,3 +520,92 @@ async def test_host_matching_ignores_case(app_client, twee_hostnames):
             headers={"x-forwarded-host": "MCP-CMS-ADM.CMSNL.COM", "x-forwarded-proto": "https"},
         )
     assert response.json()["resource"] == f"{KLANT}/mcp"
+
+
+# --------------------------------------------------------------------------
+# Waarom Entra weigerde
+# --------------------------------------------------------------------------
+
+
+class TestEntraErrorSummary:
+    """Een 400 van Entra moet zichzelf verklaren in de log.
+
+    De aanleiding: `refresh_token`-grants werden 17x op een dag geweigerd en de
+    log zei alleen "returned 400". Het antwoord van Entra ging ongelezen door
+    naar de client, en zo'n weigering staat ook niet in de Entra sign-in logs.
+    Er was dus geen tweede plek om het na te kijken.
+    """
+
+    def test_names_the_aadsts_code_and_correlation_id(self):
+        response = httpx.Response(
+            400,
+            json={
+                "error": "invalid_grant",
+                "error_codes": [70008],
+                "error_description": "AADSTS70008: The provided authorization code or refresh token has expired.\r\nTrace ID: abc",
+                "correlation_id": "0d6e-corr",
+            },
+        )
+        summary = _entra_error_summary(response)
+        assert "invalid_grant" in summary
+        assert "70008" in summary
+        assert "AADSTS70008" in summary
+        assert "0d6e-corr" in summary
+        # De Trace-ID-regel hoort er niet in: alleen de eerste regel is bruikbaar.
+        assert "Trace ID" not in summary
+
+    def test_reads_only_the_fields_it_names(self):
+        """Een veld dat Entra er ooit bij zet, belandt niet vanzelf in de log."""
+        response = httpx.Response(
+            400,
+            json={
+                "error": "invalid_grant",
+                "refresh_token": "geheim-token",
+                "access_token": "ook-geheim",
+            },
+        )
+        summary = _entra_error_summary(response)
+        assert "geheim" not in summary
+
+    def test_survives_a_non_json_body(self):
+        response = httpx.Response(502, content=b"<html>gateway</html>")
+        assert "non-JSON" in _entra_error_summary(response)
+
+    def test_survives_a_json_body_that_is_not_an_object(self):
+        assert _entra_error_summary(httpx.Response(400, json=["nope"])) == "unexpected body shape"
+
+
+async def test_token_failure_logs_why_entra_refused(app_client, caplog):
+    upstream = httpx.Response(
+        400,
+        json={
+            "error": "invalid_grant",
+            "error_codes": [9002313],
+            "error_description": "AADSTS9002313: bad request",
+        },
+    )
+    instance = MagicMock()
+    instance.post = AsyncMock(return_value=upstream)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=instance)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        caplog.at_level("WARNING", logger="admcms_mcp.oauth"),
+        patch("admcms_mcp.oauth.httpx.AsyncClient", return_value=ctx),
+    ):
+        async with app_client(build_app()) as client:
+            response = await client.post(
+                "/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": "geheim-token",
+                    "client_id": APP_ID,
+                },
+            )
+
+    assert response.status_code == 400
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "AADSTS9002313" in logged
+    assert "invalid_grant" in logged
+    assert "geheim-token" not in logged

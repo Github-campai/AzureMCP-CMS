@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     admcms_database: str = "ADMCMS-PRODUCTION-REPL01"
     admcms_driver: str = "ODBC Driver 18 for SQL Server"
 
+    # Log level voor de Azure-SDK's HTTP-logging. De azure-core
+    # HttpLoggingPolicy logt op INFO van elke Key Vault- en Table-call de
+    # volledige request- en response-headers; dat was ruwweg de helft van het
+    # logvolume en maakte echte fouten onvindbaar. "INFO" of "DEBUG" zet het
+    # weer aan wanneer je een Azure-call moet uitpluizen.
+    azure_sdk_log_level: str = "WARNING"
+
     # Escape hatches (development only)
     auth_disabled: bool = False
 

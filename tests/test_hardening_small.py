@@ -220,3 +220,49 @@ class TestCleanups:
 
         monkeypatch.setenv("ALLOW_ENV_SECRETS", "true")
         assert keyvault._env_override("admcms-db-password") == "from-the-environment"
+
+
+class TestAzureSdkLogNoise:
+    """De Azure-SDK's logden op INFO elke request- en response-header.
+
+    `keyvault.get_secret` draait op een cache van vijf minuten, dus dat was
+    ruwweg de helft van het logvolume van de container - en het maakte echte
+    fouten onvindbaar tussen de headers door.
+    """
+
+    def test_build_app_quiets_the_http_logging_policy(self, monkeypatch):
+        import logging
+
+        from admcms_mcp.server import _NOISY_AZURE_LOGGERS
+
+        for name in _NOISY_AZURE_LOGGERS:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        build_app()
+
+        for name in _NOISY_AZURE_LOGGERS:
+            assert logging.getLogger(name).level == logging.WARNING
+
+    def test_level_is_configurable_for_when_you_need_the_detail(self, monkeypatch):
+        import logging
+
+        from admcms_mcp.config import get_settings
+        from admcms_mcp.server import _NOISY_AZURE_LOGGERS
+
+        monkeypatch.setenv("AZURE_SDK_LOG_LEVEL", "DEBUG")
+        get_settings.cache_clear()
+        build_app()
+
+        assert logging.getLogger(_NOISY_AZURE_LOGGERS[0]).level == logging.DEBUG
+
+    def test_an_unusable_value_falls_back_to_warning(self, monkeypatch):
+        import logging
+
+        from admcms_mcp.config import get_settings
+        from admcms_mcp.server import _NOISY_AZURE_LOGGERS
+
+        monkeypatch.setenv("AZURE_SDK_LOG_LEVEL", "erg-stil-graag")
+        get_settings.cache_clear()
+        build_app()
+
+        assert logging.getLogger(_NOISY_AZURE_LOGGERS[0]).level == logging.WARNING

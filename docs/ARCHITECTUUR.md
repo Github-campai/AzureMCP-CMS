@@ -5,7 +5,7 @@
 > auth, autorisatie, endpoints, tools, data-laag, config of deploy (zie [`CLAUDE.md`](../CLAUDE.md)).
 > Verifieer bij twijfel altijd tegen de code; de bestandsverwijzingen hieronder zijn daarvoor.
 >
-> Laatst geverifieerd tegen commit `22be027` (main) — 2026-08-27.
+> Laatst geverifieerd tegen commit `a18cea1` (main) — 2026-08-31.
 >
 > De app antwoordt op twee hostnames: `admcms.campai.nl` (Campai) en
 > `mcp-cms-adm.cmsnl.com` (klantnaam). Beide hebben een managed certificate en
@@ -107,10 +107,10 @@ src/admcms_mcp/
 ├── branding.py      Icon-serving (/icon.png + aliases) en serverInfo.icons
 └── assets/          icon.png
 
-tests/               307 testfuncties (pytest, asyncio_mode=auto)
+tests/               471 testfuncties (pytest, asyncio_mode=auto)
 infra/               Bicep: Container App, ACR, KV, MI, App Insights, LAW
 scripts/             PowerShell: Entra-app, redirect-URIs, KV seed, deploy, rotate
-.github/workflows/   ci.yml, deploy-to-aca.yml, nightly-restart.yml, security-scan.yml
+.github/workflows/   ci.yml, deploy-to-aca.yml, security-scan.yml
 web/                 admin.html (audit-UI), chat.html (prototype portaal)
 docs/                Deze doc + ops/onboarding/testing/deploy + DATABASE-KENNIS/ + superpowers specs
 ```
@@ -483,7 +483,8 @@ Alles in [`db.py`](../src/admcms_mcp/db.py).
 | Audit-koppeling | Elke uitgevoerde query wordt via `audit.record_sql(sql, params, duration_ms, row_count)` aan de actieve audit-entry gehangen. |
 
 `get_filter_options` heeft een eigen 6-uurs cache met sentinel `ts=None` (na een gedeeltelijk
-mislukte refresh wordt niet "vers" geserveerd — nightly restart maakte `now-0.0 < TTL` anders waar).
+mislukte refresh wordt niet "vers" geserveerd — de inmiddels verwijderde nightly restart maakte
+`now-0.0 < TTL` anders waar).
 
 ---
 
@@ -543,6 +544,7 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `ROLE_CLAIM` | – | `roles` | JWT-claim met de app roles |
 | `ROLE_DEFAULT` | – | `viewer` | Rol zonder toegewezen app-rol |
 | `ROLE_ENFORCEMENT` | – | `warn` | `off` / `warn` (loggen) / `enforce` |
+| `AZURE_SDK_LOG_LEVEL` | – | `WARNING` | Log-niveau van de Azure-SDK's. De `HttpLoggingPolicy` van azure-core logt op INFO van elke Key Vault- en Table-call de volledige request- en response-headers; op `WARNING` verdwijnt dat. Zet op `INFO`/`DEBUG` om een Azure-call uit te pluizen |
 | `DEV_ROLES` | – | `admin` | Rollen bij `AUTH_DISABLED=true`, alleen lokaal |
 | `MAX_CONCURRENT_QUERIES_PER_USER` | – | `3` | Gelijktijdige tool-calls per gebruiker; `0` schakelt de rem uit |
 | `QUERY_QUEUE_TIMEOUT_SECONDS` | – | `60` | Hoe lang een call op een vrije slot wacht voordat hij wordt geweigerd |
@@ -564,7 +566,6 @@ flowchart LR
     U --> V1[/healthz 200/]
     V1 --> V2[OAuth-discovery-keten<br/>4× well-known · 401+WWW-Authenticate · /register 201 · GET /mcp 401]
     S[security-scan.yml<br/>Gitleaks · Trivy · Semgrep] -.elke push + nightly.-> P
-    N[nightly-restart.yml 23:00 UTC] --> R[revision restart + healthz]
 ```
 
 - **Runtime**: `python:3.12-slim-bookworm` + msodbcsql18, non-root `appuser` (uid 10001), `uvicorn --proxy-headers --forwarded-allow-ips='*'` op poort 8000. Container Apps: 0.5 vCPU / 1 Gi, min 1 / max 3 replicas, http-scaling.
@@ -584,6 +585,9 @@ flowchart LR
 | 1 | ~~README zegt "21 tools", `health_check` hardcodeert `tool_count: 23`.~~ | `README.md`, `server.py` | **Opgelost 2026-08-27**: `tool_count` telt nu `len(await mcp.list_tools())`, dus hij kan niet meer uit de pas lopen. Test-aantallen in README/CLAUDE.md gelijkgetrokken. |
 | 2 | ~~Audit-store SQLite in `/tmp` is ephemeraal → geen duurzame audit-trail.~~ | `audit_stores.py`, `infra/resources.bicep` | **Opgelost 2026-08-19** in de code (`AzureTableStore`, `AUDIT_STORE=azure_table` handmatig op de container app gezet) en **2026-08-27** in de infra: de bicep zei nog `local` + `/tmp/audit.db`, dus de eerstvolgende `az deployment group create` had prod teruggezet. Storage account, table, RBAC en env staan nu in de bicep, met een test die op die drift faalt. |
 | 3 | ~~`/admin/*` heeft geen aparte rol: elke geautoriseerde gebruiker kan de audit van anderen lezen.~~ | `auth.py`, `server.py` | **Opgelost 2026-08-19**: `check_admin_access()` op `/admin/*`, geconfigureerd via de `admins`-sectie in de allowlist. Faalt dicht zonder configuratie. |
+| 21 | Gastgebruikers (`userType=Guest`) komen er niet in: de OAuth-proxy stuurt iedereen naar `login.microsoftonline.com/organizations`, en Entra logt een gast dan in op zijn **eigen** thuistenant. Het token draagt dus die `tid`, niet die van de tenant waar hij gast is, en `validate_jwt` weigert hem op `Untrusted tenant`. Lidmaatschap van `SG-CMS-MCP-Users` helpt niet — die controle wordt nooit bereikt. | `oauth.py`, `auth.py` | Vastgesteld 2026-08-31 bij een gast in de CMS-tenant. Drie uitwegen: een echt account in de resource-tenant (eenvoudigst), volledige onboarding van zijn thuistenant, of `/authorize` een tenant-specifieke authority laten gebruiken zodat gasten in de juiste tenant landen. Nog geen keuze gemaakt. |
+| 22 | ~~`get_margin_report` viel om bij een uitsplitsing met vorig jaar erbij: `delta_turnover` trok een float van een `Decimal` af (`TypeError`), en waar het niet omviel kwam omzet als de string "1000.50" bij het model aan.~~ | `tools.py` | **Opgelost 2026-08-31**: `_enrich_margin_row` normaliseert `turnover` en `cost` naar float, zoals de rest van `tools.py` die kolommen al behandelde. Raakte een echte gebruiker 4x op 28-08. De tests mockten `_fetch_margin` uitsluitend met floats, waardoor het `Decimal`-pad nooit werd uitgevoerd; twee tests dekken dat nu. |
+| 20 | Entra weigert periodiek een `refresh_token`-grant (17× op 31-08): de client krijgt een 401 en logt opnieuw in, dus zelfherstellend maar zichtbaar voor de gebruiker. De oorzaak is nog onbekend — de weigering verschijnt **niet** in de Entra sign-in logs (ook niet onder `nonInteractiveUser`), wat wijst op een afwijzing op protocolniveau in plaats van een mislukte sign-in. | `oauth.py` | **Diagnose ingebouwd 2026-08-31**: `_entra_error_summary` logt nu `error`, `error_codes`, de AADSTS-tekst en `correlation_id` uit het antwoord van Entra. Daarvóór werd alleen de statuscode gelogd en ging het antwoord ongelezen naar de client. Volgende keer noemt de log de reden zelf. |
 | 19 | Rollen per tool staan op `ROLE_ENFORCEMENT=warn`: er wordt nog niets geweigerd, alleen gelogd. | `roles.py` | Bewust, tot de app roles in Entra zijn toegewezen. Omzetten naar `enforce` is één env-var. |
 | 4 | ~~`CAMPAI_ALLOWED_GROUP` bestaat in code maar niet in Bicep/prod → dood configuratie-pad.~~ | `config.py`, `auth.py` | **Opgelost 2026-08-27**: verwijderd. De Campai-groep stond al in de allowlist, dus in productie verandert er niets; er is nu één plek waar toegang wordt besloten in plaats van twee. |
 | 14 | ~~Databasetekst ging ongemarkeerd naar het model (prompt-injectie via productomschrijving of klantnaam).~~ | `server.py`, `query_helpers.py` | **Opgelost 2026-08-27**: `⟦extern⟧`-markering op `Searchname`/`Description` + server-instructions. Zie §6. |
@@ -592,14 +596,14 @@ flowchart LR
 | 17 | ~~`validate_query` liet `;` door en weigerde legitieme queries met een keyword in een stringliteral.~~ | `db.py` | **Opgelost 2026-08-27**: `;` expliciet geweigerd, literals leeggemaakt vóór de check, foutmelding legt uit. Zie §7. |
 | 18 | ~~`_env_override` liet secrets uit de omgeving komen, ook in productie.~~ | `keyvault.py` | **Opgelost 2026-08-27**: achter `ALLOW_ENV_SECRETS`, default uit. |
 | 5 | Query-cache (10 min) heeft geen invalidatie en is per replica; bij >1 replica kunnen twee tegels kortstondig verschillende data tonen. | `db.py` | Geaccepteerd (dashboard-staleness). Het geheugenaspect is opgelost, zie #11. |
-| 6 | Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING). | `docs/*.md` | Cosmetisch; bijwerken bij volgende doc-ronde. |
+| 6 | ~~Docs verwijzen op meerdere plekken naar "20 tools" (OPERATING-MODEL, ONBOARDING).~~ | `docs/*.md` | **Opgelost 2026-08-31**: beide bijgewerkt naar 25. De specs onder `docs/superpowers/` blijven staan zoals ze waren — dat zijn historische ontwerpdocumenten, geen levende documentatie. |
 | 7 | `groups`-claim: Entra stuurt bij >200 groepen géén `groups`-claim (overage). Zo'n gebruiker moet dan via `users` op de allowlist. | Entra-config | Aandachtspunt bij onboarding grote tenants. |
 | 8 | ~~`/authorize` en `/token` gaven `client_id` en `grant_type` ongefilterd door aan Entra.~~ | `oauth.py` | **Opgelost 2026-08-27**: client_id gepind op `ENTRA_APP_ID`, grant_type-allowlist. |
 | 9 | ~~Rauwe pyodbc-tekst (driver, servernaam, SQL-fragment) ging naar de client.~~ | `tools.py`, `server.py` | **Opgelost 2026-08-27**: `errors.client_error()` maskeert; volledige tekst in log + audit-entry, client krijgt een referentie. |
 | 10 | ~~Geen rate-limiting of concurrency-rem per gebruiker.~~ | `limits.py` | **Opgelost 2026-08-27**: max 3 gelijktijdige calls per `oid`, wachtrij van 60 s, daarna een nette weigering. Per replica in het geheugen. |
 | 11 | ~~Query-cache groeit onbegrensd.~~ | `db.py` | **Opgelost 2026-08-27**: LRU met 256 entries, verlopen entries opgeruimd bij een miss, `query_database` en de health-ping cachen niet meer. |
 | 13 | ~~Tool-handlers draaien op de event loop; een trage query bevriest de hele server en Azure herstart de container.~~ | `server.py` | **Opgelost 2026-08-27**: `_audited` is async en draait het werk via `asyncio.to_thread`. Zie §3. |
-| 12 | Nachtelijke restart (`nightly-restart.yml`) staat er als workaround; de oorzaak was nooit onderzocht. | `.github/workflows/` | Oorzaak opgelost in #13; de workflow kan weg zodra dat een tijdje draait. **Onderzocht 2026-08-27**: de container wordt overdag al door Azure herstart doordat `/healthz` niet antwoordt terwijl een trage query de event loop blokkeert (`ReplicaUnhealthy` → *failed liveness probe*, 13× op 27-08). De nachtelijke restart lost dat niet op en verbergt het. Advies: laten staan tot de event-loop-blokkade en #11 zijn opgelost, daarna verwijderen. Voor de audit is hij niet langer schadelijk nu de trail in Table Storage staat. |
+| 12 | ~~Nachtelijke restart (`nightly-restart.yml`) staat er als workaround; de oorzaak was nooit onderzocht.~~ | `.github/workflows/` | **Opgelost 2026-08-31**: workflow verwijderd. De oorzaak was #13 (event loop geblokkeerd → `/healthz` antwoordt niet → `ReplicaUnhealthy`, 13× op 27-08). Na de fix van 27-08 18:48 is er in `ContainerAppSystemLogs` geen enkele `ReplicaUnhealthy` meer geweest; de laatste dateert van 27-08 09:06, dus vóór de deploy. De workflow verborg het probleem en herstartte verder alleen een gezonde container. |
 
 ---
 
