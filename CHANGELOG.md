@@ -8,6 +8,109 @@ veranderd en waarom*.
 
 ---
 
+## 2026-08-31 — Opvolging van de gezondheidscheck: een margefout, minder ruis, meer spoor
+
+Wat er uit de gezondheidscheck van 31 augustus kwam. Een echte fout in
+`get_margin_report`, en verder vooral: de server vertelt nu wat er misgaat in
+plaats van dat het uit de omliggende requests moest worden afgeleid. Twee keer
+bleek dat de reden van een weigering werd weggegooid — bij Entra's antwoord op
+de tokenuitwisseling, en bij een geweigerd token in de middleware.
+
+### `nightly-restart.yml` verwijderd
+
+De workflow herstartte de productie-revisie elke nacht om 23:00 UTC. Hij stond er
+als workaround voor iets wat niemand had onderzocht. Op 27-08 bleek de oorzaak:
+een trage query blokkeerde de event loop, `/healthz` antwoordde niet, en Azure
+schoot de replica af — 13x op een dag. Dat is opgelost door de tools via
+`asyncio.to_thread` te draaien (punt #13).
+
+Sindsdien staat er in `ContainerAppSystemLogs` geen enkele `ReplicaUnhealthy`
+meer. De laatste is van 27-08 09:06, ruim voor de deploy van 18:48 die de fix
+bracht. De nachtelijke restart herstartte dus alleen nog een gezonde container,
+en verborg intussen precies het signaal dat je wilt zien als het weer misgaat.
+
+### Azure-SDK logt niet meer elke header
+
+De `HttpLoggingPolicy` van azure-core logt op INFO van elke call de volledige
+request- en response-headers. `keyvault.get_secret` draait op een cache van vijf
+minuten, dus dat gebeurde de hele dag door. Grofweg de helft van het logvolume
+bestond eruit, en een echte fout stond ergens tussen twintig regels
+`x-ms-keyvault-network-info`.
+
+`build_app()` zet die loggers nu op `AZURE_SDK_LOG_LEVEL`, default `WARNING`.
+Waarschuwingen en fouten van de SDK komen dus gewoon door. Moet je een
+Azure-call uitpluizen, dan zet je de env-var op `INFO` of `DEBUG` — een
+container-app-setting, geen redeploy.
+
+### Een 400 van Entra noemt nu zijn eigen reden
+
+Op 31-08 werden 17 `refresh_token`-grants geweigerd. De client krijgt dan een
+401, logt opnieuw in en gaat verder — zelfherstellend, maar de gebruiker ziet
+een herauthenticatie die er niet hoort te zijn.
+
+Waarom Entra weigerde was niet te achterhalen. De log zei "Entra token endpoint
+returned 400" en verder niets: het antwoord ging ongelezen door naar de client.
+En zo'n weigering verschijnt *niet* in de Entra sign-in logs, ook niet onder
+`nonInteractiveUser` — er was dus geen tweede plek om het na te kijken.
+
+`_entra_error_summary()` logt nu het OAuth-foutenvelop: `error`, `error_codes`,
+de eerste regel van de AADSTS-tekst en de `correlation_id` waar Microsoft support
+om vraagt. Expliciet die velden, niet het hele antwoord: dan kan een veld dat
+Entra er ooit bij zet niet ongemerkt meeliften. De oorzaak is hiermee nog niet
+weg — de volgende keer noemt hij zichzelf.
+
+### Een geweigerd token laat nu een spoor na
+
+Zelfde blinde vlek, andere plek. `EntraAuthMiddleware` gaf bij een ongeldig
+token een 401 terug zonder ook maar iets te loggen. Een gastgebruiker die van
+Entra netjes een token kreeg maar bij elke call werd geweigerd, was daardoor
+onzichtbaar: geen weigering in de log, geen sign-in bij ons te zien, alleen een
+rij 401's. De oorzaak moest worden afgeleid uit de omliggende requests.
+
+De middleware logt nu de reden uit `validate_jwt` — die noemt de waarde die niet
+klopte (`Untrusted tenant: <tid>`, `Wrong audience: got ...`). Precies dat
+onderscheidt een gast die op de verkeerde tenant inlogt van een verlopen token.
+Met `%r` en een lengtelimiet, want die waarden komen uit het token zelf.
+
+Het gewone tokenloze eerste verzoek — elke MCP-client haalt daarmee de
+`WWW-Authenticate` op — logt bewust niets. Dat zijn er tientallen per uur en het
+is geen fout; zou dat pad ook loggen, dan verdrinkt de weigering die er wel toe
+doet. Een test bewaakt allebei.
+
+### `get_margin_report` viel om op echte databasewaarden
+
+Gevonden in de logs van 28-08: vier keer een `TypeError` bij een gebruiker die
+om marge per land met vorig jaar erbij vroeg. Geen verkeerd getal maar helemaal
+geen antwoord — de tool viel, de gebruiker kreeg een referentienummer.
+
+pyodbc geeft `turnover` en `cost` terug als `Decimal`. `_enrich_margin_row`
+rekende `margin` uit als float maar liet de rest via `**row` ongemoeid, dus een
+rij droeg een `Decimal` omzet naast een float marge. In de gegroepeerde tak trok
+`delta_turnover` vervolgens een float van een `Decimal` af, en dat weigert
+Python.
+
+De tak met `group_by="total"` viel niet om — daar staan aan beide kanten
+`Decimal`s — maar had een stiller probleem: pydantic serialiseert een `Decimal`
+als de *string* `"1000.50"`, dus het model kreeg omzet als tekst terwijl elke
+andere tool een getal teruggeeft.
+
+`_enrich_margin_row` normaliseert nu beide kolommen naar float, zoals de rest
+van `tools.py` ze al behandelde. Eén plek in plaats van twee losse reparaties.
+
+Waarom de tests dit nooit zagen: ze mockten `_fetch_margin` uitsluitend met
+floats, waardoor het pad dat de echte database oplevert niet werd uitgevoerd.
+Twee tests met `Decimal` dekken dat nu — en ze falen aantoonbaar zonder de fix.
+
+### Verder
+
+- `docs/ONBOARDING-CUSTOMER.md` en `docs/OPERATING-MODEL.md` zeiden nog "20
+  tools"; dat zijn er 25 (punt #6 gesloten).
+- Punt #22 in §11 voor de margefout hierboven; punt #20 voor de refresh-weigeringen, met wat er nu wel en
+  niet over bekend is, en #21 voor gastgebruikers die op hun eigen thuistenant
+  inloggen en daardoor op `Untrusted tenant` stranden.
+
+---
+
 ## 2026-08-27 — `ruff` exact gepind, CI weer groen
 
 De format-check faalde op `CHANGELOG.md`. Niet op de code: ruff formatteert ook

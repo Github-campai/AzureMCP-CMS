@@ -303,6 +303,41 @@ async def authorize_proxy(request: Request) -> Response:
     )
 
 
+def _entra_error_summary(response: httpx.Response) -> str:
+    """Name the reason Entra refused, in one loggable line.
+
+    Without this a refusal reads "Entra token endpoint returned 400" and the
+    body — the only place the reason lives — is handed to the client and
+    forgotten. A failing `refresh_token` grant does not show up in the Entra
+    sign-in logs either, so there was no second copy to fall back on: the
+    diagnosis had to start from a status code alone.
+
+    Only the OAuth error envelope is logged (`error`, `error_codes`, the AADSTS
+    text, and the correlation id Microsoft support asks for). Never a token: the
+    response to a *failed* exchange carries none, and the fields are named
+    explicitly rather than dumped, so a future Entra field cannot leak in.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return f"non-JSON body ({response.text[:120]!r})"
+
+    if not isinstance(payload, dict):
+        return "unexpected body shape"
+
+    parts = [
+        f"error={payload.get('error')!r}",
+        f"error_codes={payload.get('error_codes')}",
+    ]
+    description = (str(payload.get("error_description") or "").splitlines() or [""])[0]
+    if description:
+        parts.append(f"description={description[:200]!r}")
+    correlation_id = payload.get("correlation_id")
+    if correlation_id:
+        parts.append(f"correlation_id={correlation_id}")
+    return " ".join(parts)
+
+
 async def token_proxy(request: Request) -> Response:
     """Proxy the code / refresh-token exchange to Entra, unchanged but rescoped."""
     settings = get_settings()
@@ -344,7 +379,12 @@ async def token_proxy(request: Request) -> Response:
         # `logged` is whitelisted above; code / refresh_token / client_secret never
         # reach the log.
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-        logger.warning("Entra token endpoint returned %s for %s", upstream.status_code, logged)
+        logger.warning(
+            "Entra token endpoint returned %s for %s: %s",
+            upstream.status_code,
+            logged,
+            _entra_error_summary(upstream),
+        )
 
     return Response(
         content=upstream.content,

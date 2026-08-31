@@ -22,7 +22,7 @@ Niet vergeten:
 
 ## Werkwijze
 
-- Tests: `pytest -q` (475 tests) en `ruff check . && ruff format --check .` moeten groen zijn vóór commit; CI blokkeert deploy anders.
+- Tests: `pytest -q` (487 tests) en `ruff check . && ruff format --check .` moeten groen zijn vóór commit; CI blokkeert deploy anders.
 - `ruff` staat **exact gepind** in `pyproject.toml`. Niet losser maken: ruff formatteert ook Python-codeblokken in Markdown en dat gedrag verandert tussen patch-versies, waardoor CI kan falen op iets dat lokaal groen was. Bumpen mag, maar dan `pip install -e ".[dev]"` opnieuw draaien en `ruff format .` over de hele repo in dezelfde commit.
 - Nieuwe tool: hang hem aan minstens één rol in `src/admcms_mcp/roles.py` (`tests/test_roles.py` faalt anders), pure functie in `src/admcms_mcp/tools.py` (parametriseer via `execute_query_params`, `format_response`), registreren in `server.py` via `@mcp.tool()` + `_audited(...)`, tests in `tests/test_tools.py`.
 - Nooit `AUTH_DISABLED=true` in productie-config; nooit secrets in code/env-yaml — alles via Key Vault (`keyvault.get_secret`).

@@ -102,7 +102,7 @@ Zie [`CLIENT-SETUP.md`](CLIENT-SETUP.md) voor configuratie per AI-tool.
 
 ## Wat ziet CMS van de data?
 
-- **Lezen, niet schrijven**: alle 20 tools zijn SELECT-only, met SQL identifier
+- **Lezen, niet schrijven**: alle 25 tools zijn SELECT-only, met SQL identifier
   validation en parameterized queries. De server weigert non-SELECT.
 - **Audit log**: elke tool-call wordt geregistreerd met `upn`, `oid`, `tid`
   (tenant), duur, gestelde queries. Campai kan deze loggen inzien voor compliance.

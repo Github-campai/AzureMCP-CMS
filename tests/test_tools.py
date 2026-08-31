@@ -1,3 +1,4 @@
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -1000,6 +1001,45 @@ class TestGetMarginReport:
         assert len(result["data"]) == 2
         assert result["data"][0]["margin"] == 400.0
         assert result["data"][1]["margin_pct"] == 60.0  # NL
+
+    @patch("admcms_mcp.tools._fetch_margin")
+    def test_decimals_from_the_database_do_not_break_the_delta(self, mock_fetch):
+        """pyodbc geeft Decimal terug, niet float.
+
+        Elke test hierboven mockt met floats, en daardoor bleef het echte pad
+        ongetest: `delta_turnover` trok een float van een Decimal af en gooide
+        een TypeError, waarmee de hele tool viel. Dat gebeurde vier keer op
+        28-08-2026 bij een gebruiker die om marge per land met vorig jaar vroeg.
+        """
+        from admcms_mcp.tools import get_margin_report
+
+        mock_fetch.side_effect = [
+            [{"DeliveryCountry": "NL", "turnover": Decimal("1000.50"), "cost": Decimal("600.25")}],
+            [{"DeliveryCountry": "NL", "turnover": Decimal("900.00"), "cost": Decimal("500.00")}],
+        ]
+        result = get_margin_report("2026-01-01", "2026-02-01", group_by="country", include_ly=True)
+        assert result.get("error") is None
+        row = result["data"][0]
+        assert row["delta_turnover"] == pytest.approx(100.5)
+        assert row["delta_margin"] == pytest.approx(0.25)
+
+    @patch("admcms_mcp.tools._fetch_margin")
+    def test_money_columns_come_back_as_numbers_not_strings(self, mock_fetch):
+        """Een Decimal serialiseert als de string "1000.50", geen getal.
+
+        Dat viel niet om, maar het model kreeg omzet als tekst terwijl elke
+        andere tool een getal teruggeeft - en optellen of vergelijken doe je
+        niet met een string.
+        """
+        from admcms_mcp.tools import get_margin_report
+
+        mock_fetch.return_value = [
+            {"DeliveryCountry": "NL", "turnover": Decimal("1000.50"), "cost": Decimal("600.25")}
+        ]
+        result = get_margin_report("2026-01-01", "2026-02-01", group_by="country")
+        row = result["data"][0]
+        assert isinstance(row["turnover"], float)
+        assert isinstance(row["cost"], float)
 
     @patch("admcms_mcp.tools._fetch_margin")
     def test_include_ly_adds_delta_margin(self, mock_fetch):

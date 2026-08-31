@@ -574,11 +574,30 @@ _MARGIN_KEY_FIELD = {
 
 
 def _enrich_margin_row(row: dict) -> dict:
+    """Add margin and margin %, and normalise the money columns to float.
+
+    Normalising here rather than at each use is what keeps the rest of this
+    function honest. pyodbc hands back `Decimal` for these columns, and `**row`
+    carried that straight through, so a row held a `Decimal` turnover next to a
+    float margin. Two things went wrong with that:
+
+    - `delta_turnover` in the grouped branch subtracted a float from a
+      `Decimal` and raised `TypeError`, taking the whole call down. It hit a
+      real user four times on 28-08-2026.
+    - Where it did not raise, the value reached the model as the *string*
+      "1000.50", because that is how pydantic serialises a `Decimal` — while
+      every other tool returns turnover as a number.
+
+    The rest of `tools.py` treats these columns as float throughout; this makes
+    the margin rows agree.
+    """
     turnover = float(row.get("turnover") or 0)
     cost = float(row.get("cost") or 0)
     margin = turnover - cost
     return {
         **row,
+        "turnover": turnover,
+        "cost": cost,
         "margin": margin,
         "margin_pct": _pct(margin, turnover),
     }
