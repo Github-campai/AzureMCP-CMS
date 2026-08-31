@@ -167,6 +167,10 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
                 # tenant from an expired token. `%r` and the length cap because
                 # the values come from the token: an attacker must not be able
                 # to forge a log line with them.
+                # Logged value is the exception message from `validate_jwt`
+                # ("Untrusted tenant: <tid>"), never `token` — which stays in the
+                # enclosing scope and is not referenced here.
+                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                 logger.warning("Rejected token on %s: %r", request.url.path, str(e)[:200])
                 return self._unauthorized(request, str(e))
 
