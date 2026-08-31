@@ -11,7 +11,11 @@ import pytest
 from starlette.requests import Request
 from starlette.responses import Response
 
-from admcms_mcp.oauth import _entra_error_summary, _rewrite_scope, resource_uri
+from admcms_mcp.oauth import (
+    _entra_error_summary,
+    _rewrite_scope,
+    resource_uri,
+)
 from admcms_mcp.server import build_app
 
 APP_ID = "1e6983d3-f996-4581-9518-e6819b79ac6a"
@@ -609,3 +613,108 @@ async def test_token_failure_logs_why_entra_refused(app_client, caplog):
     assert "AADSTS9002313" in logged
     assert "invalid_grant" in logged
     assert "geheim-token" not in logged
+
+
+# --------------------------------------------------------------------------
+# Welke directory meldt de gebruiker aan
+# --------------------------------------------------------------------------
+
+CMS_TENANT = "a92e7c27-7bb0-4bc3-aea5-89df54c243ad"
+
+
+@pytest.fixture
+def per_host_authority(monkeypatch):
+    """De klanthostname meldt aan bij de klanttenant, de onze bij organizations."""
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://admcms.campai.nl")
+    monkeypatch.setenv("PUBLIC_BASE_URL_ALIASES", "https://mcp-cms-adm.cmsnl.com")
+    monkeypatch.setenv("ENTRA_AUTHORITY_BY_HOST", f"mcp-cms-adm.cmsnl.com={CMS_TENANT}")
+    from admcms_mcp.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+class TestAuthorityPerHost:
+    """Een gast hoort te worden aangemeld waar hij gast is.
+
+    `organizations` betekent "zoek de thuistenant van deze persoon op", en voor
+    een gast is dat zijn eigen werkgever - niet de tenant waar hij is
+    uitgenodigd. Zijn token draagt dan de verkeerde tenant en `validate_jwt`
+    weigert hem, nog voordat zijn groepslidmaatschap iets kan betekenen.
+    """
+
+    async def test_customer_hostname_signs_in_at_the_customer_tenant(
+        self, app_client, per_host_authority
+    ):
+        async with app_client(build_app()) as client:
+            response = await client.get(
+                "/authorize",
+                params={"client_id": APP_ID, "response_type": "code"},
+                headers={"host": "mcp-cms-adm.cmsnl.com"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        assert response.headers["location"].startswith(
+            f"https://login.microsoftonline.com/{CMS_TENANT}/oauth2/v2.0/authorize"
+        )
+
+    async def test_our_own_hostname_is_untouched(self, app_client, per_host_authority):
+        async with app_client(build_app()) as client:
+            response = await client.get(
+                "/authorize",
+                params={"client_id": APP_ID, "response_type": "code"},
+                headers={"host": "admcms.campai.nl"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        assert "/organizations/" in response.headers["location"]
+
+    async def test_token_redeems_at_the_same_authority_as_authorize(
+        self, app_client, per_host_authority
+    ):
+        """Anders is de code niet inwisselbaar en breekt elke aanmelding."""
+        ctx, instance = _mock_httpx(200, b'{"access_token":"redacted"}')
+        with patch("admcms_mcp.oauth.httpx.AsyncClient", return_value=ctx):
+            async with app_client(build_app()) as client:
+                await client.post(
+                    "/token",
+                    data={"grant_type": "authorization_code", "code": "c", "client_id": APP_ID},
+                    headers={"host": "mcp-cms-adm.cmsnl.com"},
+                )
+        url = instance.post.call_args[0][0]
+        assert url == f"https://login.microsoftonline.com/{CMS_TENANT}/oauth2/v2.0/token"
+
+    async def test_an_unknown_hostname_falls_back(self, app_client, per_host_authority):
+        """Een gespoofte Host-header kiest hooguit iets dat al geconfigureerd is."""
+        async with app_client(build_app()) as client:
+            response = await client.get(
+                "/authorize",
+                params={"client_id": APP_ID, "response_type": "code"},
+                headers={"host": "kwaadaardig.example"},
+                follow_redirects=False,
+            )
+        assert "/organizations/" in response.headers["location"]
+
+    async def test_a_typo_in_the_configuration_does_not_reach_the_url(
+        self, app_client, monkeypatch
+    ):
+        """Een onbruikbare waarde stuurt niemand naar een niet-bestaande pagina."""
+        monkeypatch.setenv("PUBLIC_BASE_URL", "https://admcms.campai.nl")
+        monkeypatch.setenv("PUBLIC_BASE_URL_ALIASES", "https://mcp-cms-adm.cmsnl.com")
+        monkeypatch.setenv("ENTRA_AUTHORITY_BY_HOST", "mcp-cms-adm.cmsnl.com=onze-tenant")
+        from admcms_mcp.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            async with app_client(build_app()) as client:
+                response = await client.get(
+                    "/authorize",
+                    params={"client_id": APP_ID, "response_type": "code"},
+                    headers={"host": "mcp-cms-adm.cmsnl.com"},
+                    follow_redirects=False,
+                )
+            assert "/organizations/" in response.headers["location"]
+            assert "onze-tenant" not in response.headers["location"]
+        finally:
+            get_settings.cache_clear()

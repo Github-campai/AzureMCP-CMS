@@ -34,6 +34,7 @@ break new clients without adding a guarantee Entra does not already give.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from urllib.parse import urlencode
 
@@ -139,6 +140,61 @@ def canonical_resource(request: Request) -> str:
 def protected_resource_metadata_url(request: Request) -> str:
     """RFC 9728 path-inserted metadata URL for the `/mcp` resource."""
     return f"{public_base_url(request)}/.well-known/oauth-protected-resource/mcp"
+
+
+#: Authority values that are not a tenant id but mean something to Entra.
+_AUTHORITY_KEYWORDS = frozenset({"organizations", "common", "consumers"})
+
+#: A tenant id, or one of the keywords above. Anything else is a typo in the
+#: configuration, and putting it in the URL would send users to a sign-in page
+#: that cannot exist.
+_AUTHORITY_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _valid_authority(value: str) -> bool:
+    lowered = value.strip().lower()
+    return lowered in _AUTHORITY_KEYWORDS or bool(_AUTHORITY_PATTERN.match(lowered))
+
+
+def authority_for_request(request: Request) -> str:
+    """Which Entra directory this request's hostname signs people in to.
+
+    The authority is the segment in the path of the Entra sign-in URL, and it
+    decides *which directory* authenticates the user. `organizations` means "any
+    work tenant — look up where this person lives", which for a guest is his own
+    employer's tenant rather than the one he is a guest in. His token then
+    carries that tenant, `validate_jwt` refuses it, and his membership of a group
+    in the customer tenant never gets a chance to matter.
+
+    Naming the tenant in the path instead signs him in to *that* directory, guest
+    object and group memberships included. It is what Power BI does when it hands
+    out a tenant-scoped link, and why a guest gets into Power BI but not here.
+
+    Keyed on the hostname because the app answers on more than one: the customer
+    hostname belongs to the customer tenant, ours does not. A single global
+    setting would push one party out of its own directory.
+
+    The host comes from the request and is therefore caller-controlled, but it is
+    only ever a *lookup key* into configuration — never interpolated into the
+    URL. A forged Host header can at most select an authority an administrator
+    already configured, and `validate_jwt` still checks the tenant afterwards.
+    """
+    try:
+        settings = get_settings()
+    except Exception:  # settings incomplete (tests / early boot)
+        return ""
+
+    configured = settings.entra_authority_by_host.get(_request_host(request))
+    if not configured:
+        return ""
+    if not _valid_authority(configured):
+        logger.warning(
+            "ENTRA_AUTHORITY_BY_HOST holds %r, which is not a tenant id or a known "
+            "keyword; falling back to ENTRA_AUTHORITY",
+            configured[:60],
+        )
+        return ""
+    return configured
 
 
 def _entra_authority(request_hint: str = "") -> str:
@@ -298,9 +354,10 @@ async def authorize_proxy(request: Request) -> Response:
 
     params.pop("resource", None)
     params["scope"] = _rewrite_scope(params.get("scope", ""))
-    return RedirectResponse(
-        url=f"{_entra_authority()}/authorize?{urlencode(params)}", status_code=302
-    )
+    # Same authority as `token_proxy` derives, or the code would be redeemed at
+    # a different directory than it was issued by and every sign-in would break.
+    authority = _entra_authority(authority_for_request(request))
+    return RedirectResponse(url=f"{authority}/authorize?{urlencode(params)}", status_code=302)
 
 
 def _entra_error_summary(response: httpx.Response) -> str:
@@ -368,7 +425,7 @@ async def token_proxy(request: Request) -> Response:
 
     async with httpx.AsyncClient(timeout=30) as client:
         upstream = await client.post(
-            f"{_entra_authority()}/token",
+            f"{_entra_authority(authority_for_request(request))}/token",
             data=body,
             headers={"Accept": "application/json"},
         )

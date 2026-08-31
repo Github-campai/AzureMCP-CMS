@@ -60,6 +60,20 @@ class Settings(BaseSettings):
     # "*" om terug te vallen op het oude gedrag als een browserclient breekt.
     cors_allow_origins: list[str] = []
 
+    # Authority per hostname, komma-gescheiden als `host=tenant-id`. De authority
+    # is het stuk in het pad van de Entra-aanmeldURL, en dat bepaalt in *welke*
+    # directory iemand wordt aangemeld. Met "organizations" zoekt Entra de
+    # thuistenant van de gebruiker op — voor een gast is dat zijn eigen tenant,
+    # niet die waar hij gast is, en dan strandt hij op de tenantcontrole in
+    # validate_jwt. Een tenant-ID in het pad meldt hem wel aan in de juiste
+    # directory, inclusief zijn groepslidmaatschappen daar.
+    #
+    # Per hostname en niet globaal: de app antwoordt op een Campai- en een
+    # klanthostname, en één authority voor allebei zou de ene partij uit haar
+    # eigen tenant duwen. Leeg = overal `entra_authority`, het gedrag van
+    # hiervoor.
+    entra_authority_by_host: dict[str, str] = {}
+
     # Rollen per tool (zie roles.py). De rol komt uit de app-roles van Entra.
     role_claim: str = "roles"
     role_default: str = "viewer"
@@ -114,6 +128,23 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [a.strip() for a in v.split(",") if a.strip()]
         return v
+
+    @field_validator("entra_authority_by_host", mode="before")
+    @classmethod
+    def split_authority_by_host(cls, v):
+        """Parse `host=authority,host=authority` into a dict, hosts lowercased."""
+        if not isinstance(v, str):
+            return v
+        mapping: dict[str, str] = {}
+        for pair in v.split(","):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            host, _, authority = pair.partition("=")
+            host, authority = host.strip().lower(), authority.strip().strip("/")
+            if host and authority:
+                mapping[host] = authority
+        return mapping
 
     @field_validator("entra_allowed_tenants", mode="before")
     @classmethod
