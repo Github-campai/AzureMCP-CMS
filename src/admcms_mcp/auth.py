@@ -99,8 +99,14 @@ def validate_jwt(token: str) -> dict[str, Any]:
     if not exp or exp < time.time():
         raise InvalidToken("Token is expired")
 
-    # aud — accept both v2 bare-GUID form and v1 `api://<guid>` form
+    # aud — the v2 bare-GUID form, the v1 `api://<guid>` form, and whatever
+    # `ENTRA_EXTRA_AUDIENCES` adds. That last one exists for Microsoft 365
+    # Copilot: the Teams Developer Portal mints its own Application ID URI for
+    # an SSO registration, and the token Copilot sends on the user's behalf
+    # carries *that* audience rather than ours. Configured explicitly, never
+    # matched by pattern — each entry is another audience our tokens may carry.
     expected_auds = {settings.entra_app_id, f"api://{settings.entra_app_id}"}
+    expected_auds.update(a.strip() for a in settings.entra_extra_audiences if a.strip())
     aud = claims.get("aud")
     aud_values = set(aud) if isinstance(aud, list) else {aud}
     if not (aud_values & expected_auds):

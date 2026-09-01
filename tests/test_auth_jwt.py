@@ -55,6 +55,39 @@ class TestValidateJwt:
         token_v2 = make_token(aud="admcms-mcp")
         assert validate_jwt(token_v2)["oid"] == "user-oid-1"
 
+    def test_extra_audience_is_accepted_when_configured(self, make_token, jwks_patch, monkeypatch):
+        """Microsoft 365 Copilot stuurt een token met zijn eigen Application ID URI.
+
+        De Teams Developer Portal munt die URI bij het aanmaken van een
+        SSO-registratie; het token dat Copilot namens de gebruiker stuurt draagt
+        die audience en niet de onze. Zonder deze instelling is elk
+        Copilot-verzoek een 401.
+        """
+        copilot_aud = "api://auth-cd152db2-ccf8-49a5-a5e2-716c1422b323/admcms-mcp"
+        monkeypatch.setenv("KEY_VAULT_URI", "https://kv.vault.azure.net/")
+        monkeypatch.setenv("ENTRA_APP_ID", "admcms-mcp")
+        monkeypatch.setenv("ENTRA_ALLOWED_TENANTS", "campai-tenant-id")
+        monkeypatch.setenv("ENTRA_EXTRA_AUDIENCES", copilot_aud)
+        from admcms_mcp.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            assert validate_jwt(make_token(aud=copilot_aud))["oid"] == "user-oid-1"
+            # De eigen audiences blijven gewoon werken.
+            assert validate_jwt(make_token(aud="admcms-mcp"))["oid"] == "user-oid-1"
+            # En verder wordt er niets extra's toegelaten.
+            with pytest.raises(InvalidToken, match="audience"):
+                validate_jwt(make_token(aud="api://auth-cd152db2-ccf8-49a5-a5e2-716c1422b323/iets"))
+        finally:
+            get_settings.cache_clear()
+
+    def test_no_extra_audiences_configured_changes_nothing(
+        self, make_token, jwks_patch, settings_patch
+    ):
+        """Leeg laten is het gedrag van hiervoor."""
+        with pytest.raises(InvalidToken, match="audience"):
+            validate_jwt(make_token(aud="api://auth-iets/anders"))
+
     def test_untrusted_tenant_rejected(self, make_token, jwks_patch, settings_patch):
         token = make_token(
             iss="https://login.microsoftonline.com/hostile-tenant/v2.0",
