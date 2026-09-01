@@ -74,6 +74,19 @@ class Settings(BaseSettings):
     # hiervoor.
     entra_authority_by_host: dict[str, str] = {}
 
+    # Extra waarden die als `aud` in een token geaccepteerd worden, naast het
+    # app-id en `api://<app-id>`. Komma-gescheiden.
+    #
+    # Nodig voor Microsoft 365 Copilot: de Teams Developer Portal genereert bij
+    # een SSO-registratie een eigen Application ID URI, en het token dat Copilot
+    # namens de gebruiker stuurt draagt *die* audience. Zonder dit is elk
+    # Copilot-verzoek een 401 op "Wrong audience".
+    #
+    # Bewust een expliciete lijst en geen patroon: elke waarde hier is een extra
+    # publiek dat onze tokens mag dragen, en dat hoort een beheerder een voor
+    # een op te schrijven.
+    entra_extra_audiences: list[str] = []
+
     # Rollen per tool (zie roles.py). De rol komt uit de app-roles van Entra.
     role_claim: str = "roles"
     role_default: str = "viewer"
@@ -121,7 +134,9 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("cors_allow_origins", "public_base_url_aliases", mode="before")
+    @field_validator(
+        "cors_allow_origins", "public_base_url_aliases", "entra_extra_audiences", mode="before"
+    )
     @classmethod
     def split_aliases(cls, v):
         """Split comma-separated string into a list of base URLs."""

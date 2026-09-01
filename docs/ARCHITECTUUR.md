@@ -107,7 +107,7 @@ src/admcms_mcp/
 ├── branding.py      Icon-serving (/icon.png + aliases) en serverInfo.icons
 └── assets/          icon.png
 
-tests/               476 testfuncties (pytest, asyncio_mode=auto)
+tests/               478 testfuncties (pytest, asyncio_mode=auto)
 infra/               Bicep: Container App, ACR, KV, MI, App Insights, LAW
 scripts/             PowerShell: Entra-app, redirect-URIs, KV seed, deploy, rotate
 .github/workflows/   ci.yml, deploy-to-aca.yml, security-scan.yml
@@ -264,10 +264,23 @@ Volgorde in [`auth.py`](../src/admcms_mcp/auth.py):
 |---|---|---|
 | 1 | Handtekening RS256 tegen JWKS van `login.microsoftonline.com/common/discovery/v2.0/keys` (cache 24 u; bij onbekende `kid` één keer geforceerd verversen) | 401 `Invalid token signature` |
 | 2 | `exp` niet verstreken | 401 `Token is expired` |
-| 3 | `aud` ∈ {`<app-id>`, `api://<app-id>`} (v2 én v1 vorm) | 401 `Wrong audience` |
+| 3 | `aud` ∈ {`<app-id>`, `api://<app-id>`} (v2 én v1 vorm) **+ `ENTRA_EXTRA_AUDIENCES`** | 401 `Wrong audience` |
 | 4 | `tid` ∈ `ENTRA_ALLOWED_TENANTS` | 401 `Untrusted tenant` |
 | 5 | `iss` ∈ {`…/{tid}/v1.0`, `https://sts.windows.net/{tid}/`, `…/{tid}/v2.0`} | 401 `Issuer does not match tenant` |
 | 6 | `scp` bevat `admcms.read` (delegated/user) **of** `roles` bevat `admcms.invoke` (app-role / client-credentials) | 401 `Missing required scope/role` |
+
+**Extra audiences.** Microsoft 365 Copilot stuurt geen token met ónze audience. De Teams
+Developer Portal munt bij een SSO-registratie een eigen Application ID URI
+(`api://auth-<registratie-guid>/<app-id>`), en dát is de `aud` van het token dat Copilot namens
+de gebruiker stuurt. `ENTRA_EXTRA_AUDIENCES` (komma-gescheiden) zet zulke waarden erbij. Bewust
+een expliciete lijst en geen patroon: elke waarde is een extra publiek dat onze tokens mag
+dragen. Leeg = het gedrag van hiervoor. De gegenereerde URI hoort óók in `identifierUris` van
+de app-registratie.
+
+**Een geweigerd token laat een spoor na.** `EntraAuthMiddleware` logt bij een `InvalidToken` de
+reden — die noemt de waarde die niet klopte (`Untrusted tenant: <tid>`, `Wrong audience: got …`).
+Het gewone tokenloze eerste verzoek logt bewust niets; dat zijn er tientallen per uur en het is
+geen fout.
 
 Daarna volgt **autorisatie** (`check_access`, §5). Een 401 draagt altijd een `WWW-Authenticate`
 met `resource_metadata` naar de https-metadata-URL, zodat een client de flow (opnieuw) kan starten.
@@ -549,6 +562,7 @@ Instellingen: [`config.py`](../src/admcms_mcp/config.py) (`Settings`, `.env` + e
 | `ROLE_DEFAULT` | – | `viewer` | Rol zonder toegewezen app-rol |
 | `ROLE_ENFORCEMENT` | – | `warn` | `off` / `warn` (loggen) / `enforce` |
 | `ENTRA_AUTHORITY_BY_HOST` | – | *(leeg)* | `host=tenant-id`, komma-gescheiden. Bepaalt in welke Entra-directory een gebruiker op die hostname wordt aangemeld. Nodig voor **gasten**: `organizations` meldt een gast aan in zijn eigen thuistenant, niet in die waar hij gast is. Leeg = overal `ENTRA_AUTHORITY` |
+| `ENTRA_EXTRA_AUDIENCES` | – | *(leeg)* | Extra `aud`-waarden die `validate_jwt` accepteert, komma-gescheiden. Nodig voor Microsoft 365 Copilot: dat stuurt een token met de Application ID URI die de Teams Developer Portal genereert, niet met de onze |
 | `AZURE_SDK_LOG_LEVEL` | – | `WARNING` | Log-niveau van de Azure-SDK's. De `HttpLoggingPolicy` van azure-core logt op INFO van elke Key Vault- en Table-call de volledige request- en response-headers; op `WARNING` verdwijnt dat. Zet op `INFO`/`DEBUG` om een Azure-call uit te pluizen |
 | `DEV_ROLES` | – | `admin` | Rollen bij `AUTH_DISABLED=true`, alleen lokaal |
 | `MAX_CONCURRENT_QUERIES_PER_USER` | – | `3` | Gelijktijdige tool-calls per gebruiker; `0` schakelt de rem uit |

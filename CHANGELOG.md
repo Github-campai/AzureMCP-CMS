@@ -8,6 +8,28 @@ veranderd en waarom*.
 
 ---
 
+## 2026-09-01 - Copilot mag een eigen audience meebrengen
+
+Microsoft 365 Copilot stuurt geen token met onze audience. De Teams Developer
+Portal munt bij een SSO-registratie een eigen Application ID URI in de vorm
+`api://auth-<registratie-guid>/<app-id>`, en dat is de `aud` van het token dat
+Copilot namens de gebruiker stuurt. `validate_jwt` accepteerde alleen het app-id
+en `api://<app-id>`, dus elk Copilot-verzoek zou een 401 `Wrong audience` zijn
+geworden - nog voor de allowlist iets te zeggen had.
+
+`ENTRA_EXTRA_AUDIENCES` (komma-gescheiden) zet zulke waarden erbij. Bewust een
+expliciete lijst en geen patroon op `api://auth-*`: elke waarde hier is een
+extra publiek dat onze tokens mag dragen, en dat hoort een beheerder een voor
+een op te schrijven in plaats van dat een wildcard het stilletjes goedkeurt.
+
+Leeg laten verandert niets - een test bewaakt dat ook.
+
+De gegenereerde URI hoort daarnaast in `identifierUris` van de app-registratie,
+en de Microsoft Enterprise token store (`ab3be6b7-...`) moet pre-geautoriseerd
+zijn op `admcms.read`. Beide zijn Entra-werk, geen code.
+
+---
+
 ## 2026-08-31 — `mcp` terug op `<2`: de 2.x-bump brak de hele server
 
 Dependabot verruimde de constraint van `mcp[cli]<2` naar `<3`. CI installeert
