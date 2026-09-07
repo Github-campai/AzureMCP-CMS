@@ -35,7 +35,7 @@ dev = [
     # gedrag verandert tussen patch-versies. Ongepind installeerde CI 0.16.5
     # terwijl een ontwikkelaar 0.16.4 had, en dan faalt de format-check op iets
     # dat lokaal groen was. Een formatter hoort reproduceerbaar te zijn.
-    "ruff==0.16.5",
+    "ruff==0.16.6",
     "pip-audit>=2.7.0",
     "cryptography>=50.0",  # <50 has CVE-2026-69247 (HIGH)
 ]
